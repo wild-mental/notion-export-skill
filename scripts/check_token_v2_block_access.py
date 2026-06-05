@@ -107,7 +107,7 @@ def summarize_load_page_chunk(body: dict, page_uuid: str) -> dict:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Check whether token_v2 can read the Notion root block.")
-    parser.add_argument("page", help="Notion page ID or URL to check")
+    parser.add_argument("page", nargs="?", default="374d03212bd480d09d7ff5a9ba7461bf")
     args = parser.parse_args()
 
     d = load_download_module()

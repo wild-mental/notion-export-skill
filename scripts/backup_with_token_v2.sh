@@ -4,11 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-if [[ $# -lt 1 || -z "${1:-}" ]]; then
-  echo "Usage: $(basename "$0") <Notion URL or page_id>" >&2
-  exit 2
-fi
-PAGE_ID="$1"
+PAGE_ID="${1:-374d03212bd480d09d7ff5a9ba7461bf}"
 
 if [[ -z "${NOTION_TOKEN_V2:-}" ]]; then
   IFS= read -r -s -p "NOTION_TOKEN_V2: " NOTION_TOKEN_V2

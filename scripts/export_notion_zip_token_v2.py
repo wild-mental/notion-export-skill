@@ -214,7 +214,7 @@ def unzip(zip_path: Path) -> Path:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Request a Notion recursive export zip with token_v2.")
-    parser.add_argument("page", help="Notion page ID or URL to export")
+    parser.add_argument("page", nargs="?", default="374d03212bd480d09d7ff5a9ba7461bf")
     parser.add_argument("--type", choices=("markdown", "html", "pdf"), default="markdown")
     parser.add_argument("--timeout", type=int, default=900)
     parser.add_argument("--no-unzip", action="store_true")

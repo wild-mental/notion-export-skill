@@ -4,37 +4,9 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-if [[ $# -lt 1 || -z "${1:-}" ]]; then
-  echo "Usage: $(basename "$0") <Notion URL or page_id>" >&2
-  exit 2
-fi
-PAGE_ID="$1"
-TOKEN_SERVICE="${NOTION_TOKEN_V2_SERVICE:-notion-export-token-v2}"
-FILE_SERVICE="${NOTION_FILE_TOKEN_SERVICE:-notion-export-file-token}"
-KEYCHAIN_ACCOUNT="${NOTION_KEYCHAIN_ACCOUNT:-notion-export}"
-
-read_keychain_secret() {
-  local service="$1"
-  if command -v security >/dev/null 2>&1; then
-    security find-generic-password -a "$KEYCHAIN_ACCOUNT" -s "$service" -w 2>/dev/null || true
-  fi
-}
-
-save_keychain_secret() {
-  local service="$1"
-  local value="$2"
-  if command -v security >/dev/null 2>&1; then
-    security add-generic-password -U -a "$KEYCHAIN_ACCOUNT" -s "$service" -w "$value" >/dev/null
-  fi
-}
-
-prompt_secret() {
-  local prompt="$1"
-  local value
-  IFS= read -r -s -p "$prompt" value
-  printf "\n" >&2
-  printf "%s" "$value"
-}
+PAGE_ID="${1:-374d03212bd480d09d7ff5a9ba7461bf}"
+# shellcheck source=scripts/notion_export_secrets.sh
+source "$ROOT_DIR/scripts/notion_export_secrets.sh"
 
 preflight_token_access() {
   local tmp
@@ -64,30 +36,30 @@ PY
   return 1
 }
 
-loaded_from_keychain=0
+loaded_from_secret_store=0
 prompted=0
 
 if [[ -z "${NOTION_TOKEN_V2:-}" ]]; then
-  NOTION_TOKEN_V2="$(read_keychain_secret "$TOKEN_SERVICE")"
+  NOTION_TOKEN_V2="$(notion_export_read_secret "$NOTION_EXPORT_TOKEN_SERVICE")"
   if [[ -n "${NOTION_TOKEN_V2:-}" ]]; then
-    loaded_from_keychain=1
+    loaded_from_secret_store=1
   fi
 fi
 
 if [[ -z "${NOTION_FILE_TOKEN:-}" ]]; then
-  NOTION_FILE_TOKEN="$(read_keychain_secret "$FILE_SERVICE")"
+  NOTION_FILE_TOKEN="$(notion_export_read_secret "$NOTION_EXPORT_FILE_SERVICE")"
   if [[ -n "${NOTION_FILE_TOKEN:-}" ]]; then
-    loaded_from_keychain=1
+    loaded_from_secret_store=1
   fi
 fi
 
 if [[ -z "${NOTION_TOKEN_V2:-}" ]]; then
-  NOTION_TOKEN_V2="$(prompt_secret "NOTION_TOKEN_V2: ")"
+  NOTION_TOKEN_V2="$(notion_export_prompt_secret "NOTION_TOKEN_V2: ")"
   prompted=1
 fi
 
 if [[ -z "${NOTION_FILE_TOKEN:-}" ]]; then
-  NOTION_FILE_TOKEN="$(prompt_secret "NOTION_FILE_TOKEN: ")"
+  NOTION_FILE_TOKEN="$(notion_export_prompt_secret "NOTION_FILE_TOKEN: ")"
   prompted=1
 fi
 
@@ -100,10 +72,10 @@ export NOTION_TOKEN_V2
 export NOTION_FILE_TOKEN
 
 if ! preflight_token_access; then
-  if [[ "$loaded_from_keychain" == "1" && "${NOTION_FORCE_PROMPT:-0}" != "1" ]]; then
+  if [[ "$loaded_from_secret_store" == "1" && "${NOTION_FORCE_PROMPT:-0}" != "1" ]]; then
     echo "Stored token_v2 cannot access this page. Enter fresh cookies." >&2
-    NOTION_TOKEN_V2="$(prompt_secret "NOTION_TOKEN_V2: ")"
-    NOTION_FILE_TOKEN="$(prompt_secret "NOTION_FILE_TOKEN: ")"
+    NOTION_TOKEN_V2="$(notion_export_prompt_secret "NOTION_TOKEN_V2: ")"
+    NOTION_FILE_TOKEN="$(notion_export_prompt_secret "NOTION_FILE_TOKEN: ")"
     export NOTION_TOKEN_V2
     export NOTION_FILE_TOKEN
     prompted=1
@@ -115,11 +87,11 @@ if ! preflight_token_access; then
 fi
 
 if [[ "$prompted" == "1" && "${NOTION_SAVE_COOKIES:-}" != "0" ]]; then
-  IFS= read -r -p "Save/update these cookies in macOS Keychain for future runs? [y/N]: " save_answer
+  IFS= read -r -p "Save/update these cookies for future runs? [y/N]: " save_answer
   if [[ "$save_answer" =~ ^[Yy]$ ]]; then
-    save_keychain_secret "$TOKEN_SERVICE" "$NOTION_TOKEN_V2"
-    save_keychain_secret "$FILE_SERVICE" "$NOTION_FILE_TOKEN"
-    echo "Saved Notion export cookies to macOS Keychain." >&2
+    save_token_v2="$(notion_export_normalize_cookie_value "$NOTION_TOKEN_V2" "token_v2")"
+    save_file_token="$(notion_export_normalize_cookie_value "$NOTION_FILE_TOKEN" "file_token")"
+    notion_export_save_credentials "$save_token_v2" "$save_file_token"
   fi
 fi
 

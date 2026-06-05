@@ -4,27 +4,16 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-if [[ $# -lt 1 || -z "${1:-}" ]]; then
-  echo "Usage: $(basename "$0") <Notion URL or page_id>" >&2
-  exit 2
-fi
-PAGE_ID="$1"
-TOKEN_SERVICE="${NOTION_TOKEN_V2_SERVICE:-notion-export-token-v2}"
-KEYCHAIN_ACCOUNT="${NOTION_KEYCHAIN_ACCOUNT:-notion-export}"
-
-read_keychain_secret() {
-  if command -v security >/dev/null 2>&1; then
-    security find-generic-password -a "$KEYCHAIN_ACCOUNT" -s "$TOKEN_SERVICE" -w 2>/dev/null || true
-  fi
-}
+PAGE_ID="${1:-374d03212bd480d09d7ff5a9ba7461bf}"
+# shellcheck source=scripts/notion_export_secrets.sh
+source "$ROOT_DIR/scripts/notion_export_secrets.sh"
 
 if [[ -z "${NOTION_TOKEN_V2:-}" ]]; then
-  NOTION_TOKEN_V2="$(read_keychain_secret)"
+  NOTION_TOKEN_V2="$(notion_export_read_secret "$NOTION_EXPORT_TOKEN_SERVICE")"
 fi
 
 if [[ -z "${NOTION_TOKEN_V2:-}" ]]; then
-  IFS= read -r -s -p "NOTION_TOKEN_V2: " NOTION_TOKEN_V2
-  printf "\n" >&2
+  NOTION_TOKEN_V2="$(notion_export_prompt_secret "NOTION_TOKEN_V2: ")"
 fi
 
 export NOTION_TOKEN_V2

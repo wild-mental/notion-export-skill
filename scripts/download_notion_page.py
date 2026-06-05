@@ -13,6 +13,7 @@ from collections import deque
 from pathlib import Path
 
 
+ROOT_PAGE = "374d03212bd480d09d7ff5a9ba7461bf"
 ROOT = Path(__file__).resolve().parents[1]
 CACHE_DIR = ROOT / ".notion-cache"
 ASSET_MANIFEST_PATH = ROOT / ".notion-assets.json"
@@ -590,7 +591,7 @@ def verify(summary: dict) -> dict:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Recursively export a Notion page with assets.")
-    parser.add_argument("page", help="Root Notion page ID or URL")
+    parser.add_argument("page", nargs="?", default=ROOT_PAGE, help="Root Notion page ID or URL")
     args = parser.parse_args()
 
     root_id = normalize_page_id(args.page)

@@ -1,43 +1,36 @@
 ---
 name: notion-export
-description: Resource-complete Notion backup/export using script-based recursive Notion Export zip automation, capturing images, files, and attachments via token_v2 + file_token. Use when backing up, exporting, downloading, archiving, or recursively saving Notion pages with images, files, attachments, or resources, or when the user mentions token_v2, file_token, Notion export zip, file:// image refs, subpages, or empty signedUrls. Always prefer the token_v2 + file_token export scripts over per-file getSignedFileUrls.
+description: Resource-complete Notion backup/export using script-based recursive Notion Export zip automation. Use when backing up, exporting, downloading, archiving, or recursively saving Notion pages with images, files, attachments, resources, teaching materials, token_v2, file_token, Notion CLI, ntn, file:// image refs, subpages, or empty signedUrls. Always prefer the token_v2 + file_token export scripts over per-file getSignedFileUrls.
 ---
 
 # Notion Export Skill
 
-Resource-complete Notion backup. The recursive **Export zip** path (`token_v2` + `file_token`)
-captures page text *and* every image, file, and attachment in one archive — unlike the
-public API or per-file signing, which routinely return empty asset URLs.
-
 ## Core Rule
 
-For Notion backups where images, files, attachments, or lesson resources matter,
-**use the recursive Export zip scripts first** (`export_with_token_v2.sh`).
+For Notion backups where images, files, attachments, or lesson resources matter, use the recursive Export zip scripts first.
 
-Do not start with `getSignedFileUrls`. The known failure mode is `HTTP 200` with empty
-`signedUrls`; repeated retries waste time.
+Do not start with `getSignedFileUrls`. The known failure mode is `HTTP 200` with empty `signedUrls`; repeated retries waste time.
 
 ## Prerequisites
 
-- **macOS** — cookies are stored in the macOS Keychain via the `security` command.
-- `python3` and `bash` on `PATH`.
-- A Notion **browser session** that can open the target page (source of `token_v2` + `file_token`).
+- `bash` and `python3` on `PATH`.
+- A Notion browser session that can open the target page.
+- `token_v2` and `file_token` from the same browser profile/account.
+- Optional local secret backend: macOS Keychain, Linux `secret-tool`, or chmod 600 file fallback.
 
-The scripts run from your **workspace** (the project directory where exports should land)
-and expect to live in `<workspace>/scripts/`. Each script `cd`s to the workspace root and
-writes exports there.
+The scripts run from the user's workspace and expect to live in `<workspace>/scripts/`. Each script `cd`s to the workspace root and writes exports there.
 
-### Install the scripts into your workspace
+### Install or Refresh Scripts
 
-If `<workspace>/scripts/` does not already contain the export scripts, fetch the bundled
-copies from this skill's repo:
+If `<workspace>/scripts/` does not contain the latest export scripts, fetch them from this skill repo:
 
 ```bash
 cd <your-workspace>
 mkdir -p scripts
 base=https://raw.githubusercontent.com/wild-mental/notion-export-skill/main/scripts
-for f in save_notion_export_cookies.sh export_with_token_v2.sh export_notion_zip_token_v2.py \
-         check_token_v2_access.sh check_token_v2_block_access.py check_notion_asset_auth.py \
+for f in notion_export_secrets.sh save_notion_export_cookies.sh export_with_token_v2.sh \
+         export_notion_zip_token_v2.py check_token_v2_access.sh \
+         check_token_v2_block_access.py check_notion_asset_auth.py \
          backup_with_token_v2.sh download_notion_page.py; do
   curl -fsSL "$base/$f" -o "scripts/$f"
 done
@@ -53,71 +46,95 @@ cd <your-workspace>
 ./scripts/save_notion_export_cookies.sh
 ```
 
-This stores `token_v2` and `file_token` in the macOS Keychain:
-
-```text
-service: notion-export-token-v2    (token_v2)
-service: notion-export-file-token  (file_token)
-account: notion-export
-```
-
-Then run an export. **The page argument is required** (the scripts no longer assume a
-default page):
+Then run an export:
 
 ```bash
-cd <your-workspace>
 ./scripts/export_with_token_v2.sh "<Notion URL or page_id>"
 ```
+
+If no page argument is provided, the local script uses its configured default root page. For general backups, pass the target page explicitly.
 
 The export script reads credentials in this order:
 
 ```text
 1. NOTION_TOKEN_V2 / NOTION_FILE_TOKEN environment variables
-2. macOS Keychain
+2. local secret backend
 3. hidden terminal prompts
 ```
 
-It runs a `token_v2` page-access preflight before creating the export task. If stored
-Keychain credentials cannot read the page, it prompts for fresh cookies. If it prompts,
-it may ask:
+It runs a `token_v2` page-access preflight before creating the export task. If stored credentials cannot read the page, it prompts for fresh cookies.
+
+If it prompts, it may ask:
 
 ```text
-Save/update these cookies in macOS Keychain for future runs? [y/N]:
+Save/update these cookies for future runs? [y/N]:
 ```
 
-The user must enter cookie values only in their **local terminal**. Never ask them to
-paste these secrets into chat.
+The user must enter cookie values only in their local terminal. Never ask them to paste these secrets into chat.
+
+## Secret Backend
+
+Backend selection:
+
+```text
+NOTION_SECRET_BACKEND=auto        # default
+auto on macOS                     # macOS Keychain via security
+auto on Linux with secret-tool     # libsecret / GNOME Keyring
+auto otherwise                    # chmod 600 local file fallback after confirmation
+NOTION_SECRET_BACKEND=keychain     # force macOS Keychain
+NOTION_SECRET_BACKEND=secret-tool  # force Linux secret-tool
+NOTION_SECRET_BACKEND=file         # force local chmod 600 file fallback
+NOTION_SECRET_BACKEND=none         # never save, prompt/env only
+```
+
+Default secret names:
+
+```text
+notion-export-token-v2
+notion-export-file-token
+account: notion-export
+```
+
+File fallback path:
+
+```text
+${XDG_CONFIG_HOME:-$HOME/.config}/notion-export/cookies.env
+```
+
+The file fallback stores base64-encoded values in a chmod 600 file. It is not encrypted at rest, so the script asks for confirmation unless `NOTION_ALLOW_PLAINTEXT_STORE=1` is set.
+
+Use `NOTION_SAVE_COOKIES=0` with `export_with_token_v2.sh` when prompted cookies should not be saved.
 
 ## Bundled Scripts
 
 | Script | Role |
 |--------|------|
-| `save_notion_export_cookies.sh` | Store `token_v2` + `file_token` in the macOS Keychain |
-| `export_with_token_v2.sh` | Main entry: preflight + recursive export zip |
-| `export_notion_zip_token_v2.py` | Enqueue + poll + download + unzip the Notion export |
+| `notion_export_secrets.sh` | Shared secret backend selection, read, save, and cookie normalization |
+| `save_notion_export_cookies.sh` | Store `token_v2` + `file_token` in the selected local secret backend |
+| `export_with_token_v2.sh` | Main entry: credential load, preflight, recursive export zip |
+| `export_notion_zip_token_v2.py` | Enqueue, poll, download, and unzip the Notion export |
 | `check_token_v2_access.sh` | Diagnose `token_v2` page access |
 | `check_token_v2_block_access.py` | Per-origin block-access report |
 | `check_notion_asset_auth.py` | Probe legacy `getSignedFileUrls` |
 | `backup_with_token_v2.sh` | Legacy markdown-graph backup entry |
 | `download_notion_page.py` | Legacy recursive markdown + asset downloader |
 
-Prefer running the workspace `scripts/` copies — they write exports and summaries into the
-workspace.
+Prefer running the workspace `scripts/` copies because they write exports and summaries into the workspace.
 
 ## Cookie Rules
 
 - `token_v2` and `file_token` are full browser-session secrets.
 - Collect them only through hidden terminal prompts.
 - Do not print, log, or commit them.
-- Store them only in the macOS Keychain after explicit user action/confirmation.
+- Store them only in a local secret backend after explicit user action/confirmation.
+- Prefer macOS Keychain or Linux `secret-tool`; use file fallback only when the user accepts plaintext-at-rest risk.
 - Use cookies from the same browser profile and Notion account that can open the target page.
-- If copied as `token_v2=...`, `file_token=...`, or from a full `Cookie:` header, the scripts
-  normalize the value.
+- If copied as `token_v2=...`, `file_token=...`, or from a full `Cookie:` header, the scripts normalize the value.
 
 Cookie lookup:
 
 1. Open the target Notion page in the browser account with access.
-2. Open DevTools: `Cmd + Option + I`.
+2. Open DevTools.
 3. Go to `Application > Storage > Cookies`.
 4. Check `https://www.notion.so` and `https://app.notion.com`.
 5. Copy `token_v2`.
@@ -148,8 +165,7 @@ Bad result:
 "root_present": false
 ```
 
-If bad, the user copied cookies from the wrong account/profile, or the account does not have
-access to the page.
+If bad, the user copied cookies from the wrong account/profile or the account does not have access to the page.
 
 If only `app.notion.com` works, retry export with:
 
@@ -182,24 +198,13 @@ Expected success output:
 
 ### `signed_present: 0`, `signed_empty: 20`
 
-Old per-file signing is failing:
-
-```json
-{
-  "ok": false,
-  "tested": 20,
-  "http_200": 20,
-  "signed_present": 0,
-  "signed_empty": 20
-}
-```
-
-Switch to Export zip. Do not keep retrying `getSignedFileUrls`.
+Old per-file signing is failing. Switch to Export zip. Do not keep retrying `getSignedFileUrls`.
 
 ### `User cannot access block`
 
-Run `check_token_v2_access.sh`. If role is `none`, get cookies from the correct browser
-account/profile. If Keychain cookies are stale, refresh them:
+Run `check_token_v2_access.sh`. If role is `none`, get cookies from the correct browser account/profile.
+
+If stored cookies are stale, refresh them:
 
 ```bash
 ./scripts/save_notion_export_cookies.sh
@@ -207,8 +212,7 @@ account/profile. If Keychain cookies are stale, refresh them:
 
 ### Zip download `HTTP 403` with HTML
 
-The export task completed, but the download context was invalid. Re-check `file_token` from
-the same profile/account as `token_v2`. The downloader must send:
+The export task completed, but the download context was invalid. Re-check `file_token` from the same profile/account as `token_v2`. The downloader must send:
 
 ```text
 Cookie: token_v2=...;file_token=...
@@ -218,8 +222,7 @@ Referer: https://www.notion.so/
 
 ### `file_token` missing
 
-Refresh the target Notion page, then re-check cookies on both `www.notion.so` and
-`app.notion.com`.
+Refresh the target Notion page, then re-check cookies on both `www.notion.so` and `app.notion.com`.
 
 ### `Could not infer spaceId`
 
@@ -231,8 +234,7 @@ NOTION_SPACE_ID=<space-id> ./scripts/export_with_token_v2.sh "<Notion URL or pag
 
 ## Legacy Markdown Path
 
-Use only after a resource-complete export is secured, or when the user explicitly wants
-local Markdown graph processing:
+Use only after resource-complete export is secured, or when the user explicitly wants local Markdown graph processing:
 
 ```bash
 python3 scripts/download_notion_page.py "<Notion URL or page_id>"
@@ -243,7 +245,7 @@ Known behavior:
 - `.notion-cache/<page_id>.md` avoids re-fetching pages.
 - `.notion-assets.json` records `source -> local file` after successful asset downloads.
 - Re-runs skip existing non-empty asset files.
-- `file://` refs and empty signed URLs mean this path is **not** resource-complete.
+- `file://` refs and empty signed URLs mean this path is not resource-complete.
 
 ## Reporting
 
@@ -264,5 +266,4 @@ For export zip backups, report:
 | 프로젝트 | `.cursor/skills/notion-export/SKILL.md` |
 | 개인 | `~/.cursor/skills/notion-export/SKILL.md` |
 
-개인 스킬 `~/.cursor/skills/` 생성 후 UI에 안 보이면 **Reload Window** 필요.
-수동 호출: `/notion-export`.
+개인 스킬 `~/.cursor/skills/` 생성 후 UI에 안 보이면 Reload Window가 필요할 수 있다. 수동 호출: `/notion-export`.

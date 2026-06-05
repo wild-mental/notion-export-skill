@@ -1,0 +1,12 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# macOS
+.DS_Store
+
+# Notion export artifacts (created in the user's workspace, never in this repo)
+notion-exports/
+.notion-cache/
+.notion-assets.json
+backup-summary.json

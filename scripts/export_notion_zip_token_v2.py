@@ -6,24 +6,28 @@ import importlib.util
 import json
 import os
 import posixpath
+import re
 import shutil
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
+import unicodedata
 import uuid
 import zipfile
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, List, Optional, Set, Tuple
 
 
 ROOT = Path(__file__).resolve().parents[1]
 DOWNLOAD_SCRIPT = ROOT / "scripts" / "download_notion_page.py"
 EXPORT_DIR = ROOT / "notion-exports"
 API_ORIGIN = os.environ.get("NOTION_API_ORIGIN", "https://www.notion.so").rstrip("/")
-MAX_EXTRACT_COMPONENT_BYTES = 160
-MAX_EXTRACT_RELATIVE_PATH_BYTES = 700
-MIN_EXTRACT_COMPONENT_BYTES = 48
+MAX_FILENAME_BYTES = int(os.environ.get("NOTION_EXPORT_MAX_FILENAME_BYTES", "240"))
+MAX_RELATIVE_PATH_BYTES = int(os.environ.get("NOTION_EXPORT_MAX_RELATIVE_PATH_BYTES", "700"))
+MIN_PATH_COMPONENT_BYTES = 48
+LINK_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
 
 
 def load_download_module():
@@ -205,145 +209,380 @@ def byte_len(value: str) -> int:
     return len(value.encode("utf-8"))
 
 
-def utf8_prefix(value: str, max_bytes: int) -> str:
-    output = []
-    used = 0
-    for char in value:
-        size = len(char.encode("utf-8"))
-        if used + size > max_bytes:
+def unquote_repeated(value: str, rounds: int = 5) -> str:
+    result = value
+    for _ in range(rounds):
+        decoded = urllib.parse.unquote(result)
+        if decoded == result:
             break
-        output.append(char)
-        used += size
-    return "".join(output)
+        result = decoded
+    return unicodedata.normalize("NFC", result)
 
 
-def shorten_component(component: str, max_bytes: int, preserve_suffix: bool) -> str:
-    component = component.replace("\x00", "_")
-    if byte_len(component) <= max_bytes:
-        return component
-
-    digest = hashlib.sha1(component.encode("utf-8")).hexdigest()[:10]
-    suffix = Path(component).suffix if preserve_suffix else ""
-    if suffix and byte_len(suffix) > min(40, max_bytes - byte_len(digest)):
-        suffix = ""
-
-    marker = f"-{digest}"
-    budget = max_bytes - byte_len(marker) - byte_len(suffix)
-    if budget < 1:
-        return f"{digest}{suffix}"
-
-    stem = component[:-len(suffix)] if suffix else component
-    prefix = utf8_prefix(stem, budget).rstrip(" ._-")
-    if not prefix:
-        prefix = "item"
-    return f"{prefix}{marker}{suffix}"
+def truncate_utf8(value: str, max_bytes: int) -> str:
+    if byte_len(value) <= max_bytes:
+        return value
+    return value.encode("utf-8")[:max_bytes].decode("utf-8", "ignore")
 
 
-def zip_member_parts(member_name: str) -> list:
+def split_extension(value: str) -> Tuple[str, str]:
+    stem, dot, suffix = value.rpartition(".")
+    if not dot or not stem:
+        return value, ""
+    suffix = dot + suffix
+    if byte_len(suffix) > 32:
+        return value, ""
+    return stem, suffix
+
+
+def shorten_component(value: str, limit: int = MAX_FILENAME_BYTES) -> str:
+    if byte_len(value) <= limit:
+        return value
+
+    digest = hashlib.sha1(value.encode("utf-8")).hexdigest()[:12]
+    stem, suffix = split_extension(value)
+    trailer = f"-{digest}{suffix}"
+    stem_limit = max(1, limit - byte_len(trailer))
+    stem = truncate_utf8(stem, stem_limit).rstrip(" .") or "file"
+    shortened = f"{stem}-{digest}{suffix}"
+    if byte_len(shortened) <= limit:
+        return shortened
+
+    fallback = f"{digest}{suffix}"
+    if byte_len(fallback) <= limit:
+        return fallback
+    return truncate_utf8(digest, limit)
+
+
+def validate_zip_member_name(member_name: str) -> None:
     name = member_name.replace("\\", "/")
     first_part = name.split("/", 1)[0]
     if name.startswith("/") or (len(first_part) == 2 and first_part[1] == ":" and first_part[0].isalpha()):
         raise RuntimeError(f"Refusing to extract unsafe zip member path: {member_name}")
 
-    normalized = posixpath.normpath(name)
-    parts = [part for part in normalized.split("/") if part not in {"", "."}]
-    if not parts or any(part == ".." for part in parts):
-        raise RuntimeError(f"Refusing to extract unsafe zip member path: {member_name}")
+
+def safe_component(raw: str, shorten: bool) -> str:
+    value = unquote_repeated(raw).replace("\x00", "_").replace("/", "_")
+    if value in {"", "."}:
+        return "_"
+    if value == "..":
+        value = "__"
+    if shorten:
+        value = shorten_component(value)
+    return value
+
+
+def zip_rel_parts(name: str, shorten: bool) -> List[str]:
+    validate_zip_member_name(name)
+    parts = []
+    for raw in name.replace("\\", "/").split("/"):
+        if not raw or raw == ".":
+            continue
+        parts.append(safe_component(raw, shorten=shorten))
     return parts
 
 
-def safe_zip_parts(member_name: str, is_dir: bool) -> tuple:
-    raw_parts = zip_member_parts(member_name)
-    last_index = len(raw_parts) - 1
-    safe_parts = [
-        shorten_component(
-            part,
-            MAX_EXTRACT_COMPONENT_BYTES,
-            preserve_suffix=(index == last_index and not is_dir),
-        )
-        for index, part in enumerate(raw_parts)
-    ]
-
-    while byte_len("/".join(safe_parts)) > MAX_EXTRACT_RELATIVE_PATH_BYTES:
+def shrink_relative_path(parts: List[str]) -> List[str]:
+    safe_parts = list(parts)
+    while byte_len("/".join(safe_parts)) > MAX_RELATIVE_PATH_BYTES:
         candidates = [
             (byte_len(part), index)
             for index, part in enumerate(safe_parts)
-            if byte_len(part) > MIN_EXTRACT_COMPONENT_BYTES
+            if byte_len(part) > MIN_PATH_COMPONENT_BYTES
         ]
         if not candidates:
-            raise RuntimeError(f"Could not shorten zip member path enough: {member_name}")
+            raise RuntimeError(f"Could not shorten zip member path enough: {'/'.join(parts)}")
 
         current_bytes, index = max(candidates)
-        overflow = byte_len("/".join(safe_parts)) - MAX_EXTRACT_RELATIVE_PATH_BYTES
+        overflow = byte_len("/".join(safe_parts)) - MAX_RELATIVE_PATH_BYTES
         next_limit = max(
-            MIN_EXTRACT_COMPONENT_BYTES,
-            current_bytes - min(current_bytes - MIN_EXTRACT_COMPONENT_BYTES, overflow + 8),
+            MIN_PATH_COMPONENT_BYTES,
+            current_bytes - min(current_bytes - MIN_PATH_COMPONENT_BYTES, overflow + 8),
         )
-        safe_parts[index] = shorten_component(
-            raw_parts[index],
-            next_limit,
-            preserve_suffix=(index == last_index and not is_dir),
-        )
-
-    return raw_parts, safe_parts
+        safe_parts[index] = shorten_component(safe_parts[index], next_limit)
+    return safe_parts
 
 
-def unique_collision_path(path: Path) -> Path:
-    if not path.exists():
-        return path
-
-    suffix = path.suffix
-    stem = path.name[:-len(suffix)] if suffix else path.name
-    digest = hashlib.sha1(str(path).encode("utf-8")).hexdigest()[:8]
-    for index in range(2, 1000):
-        candidate = path.with_name(f"{stem}-{digest}-{index}{suffix}")
-        if not candidate.exists():
-            return candidate
-    raise RuntimeError(f"Could not create a unique extracted path for: {path}")
+def add_collision_suffix(value: str, token: str) -> str:
+    stem, suffix = split_extension(value)
+    return shorten_component(f"{stem}-{token}{suffix}")
 
 
-def unzip(zip_path: Path) -> tuple:
-    out_dir = zip_path.with_suffix("")
+def unique_safe_rel(safe_rel: str, original_name: str, used: Set[str]) -> Tuple[str, bool]:
+    if safe_rel not in used:
+        used.add(safe_rel)
+        return safe_rel, False
+
+    parts = safe_rel.split("/")
+    original_last = parts[-1]
+    digest = hashlib.sha1(original_name.encode("utf-8")).hexdigest()[:8]
+    index = 2
+    while True:
+        parts[-1] = add_collision_suffix(original_last, f"{digest}-{index}")
+        candidate = "/".join(parts)
+        if candidate not in used:
+            used.add(candidate)
+            return candidate, True
+        index += 1
+
+
+def build_extraction_plan(archive: zipfile.ZipFile):
+    plan = []
+    decoded_to_safe = {}  # type: Dict[str, str]
+    safe_to_decoded = {}  # type: Dict[str, str]
+    used = set()  # type: Set[str]
+    stats = {
+        "extracted_files": 0,
+        "normalized_paths": 0,
+        "shortened_paths": 0,
+        "collisions": 0,
+        "rewritten_links": 0,
+    }
+
+    for info in archive.infolist():
+        if info.is_dir():
+            continue
+
+        raw_parts = [part for part in info.filename.replace("\\", "/").split("/") if part and part != "."]
+        decoded_parts = zip_rel_parts(info.filename, shorten=False)
+        safe_parts = shrink_relative_path(zip_rel_parts(info.filename, shorten=True))
+        if not safe_parts:
+            continue
+
+        raw_rel = "/".join(raw_parts)
+        decoded_rel = "/".join(decoded_parts)
+        safe_rel = "/".join(safe_parts)
+        if raw_rel != decoded_rel:
+            stats["normalized_paths"] += 1
+        if decoded_rel != safe_rel:
+            stats["shortened_paths"] += 1
+
+        safe_rel, collided = unique_safe_rel(safe_rel, info.filename, used)
+        if collided:
+            stats["collisions"] += 1
+
+        plan.append((info, decoded_rel, safe_rel))
+        decoded_to_safe.setdefault(decoded_rel, safe_rel)
+        safe_to_decoded[safe_rel] = decoded_rel
+        stats["extracted_files"] += 1
+
+    return plan, decoded_to_safe, safe_to_decoded, stats
+
+
+def safe_extract_member(archive: zipfile.ZipFile, info: zipfile.ZipInfo, out_dir: Path, safe_rel: str) -> None:
+    out_root = out_dir.resolve()
+    target = out_dir.joinpath(*safe_rel.split("/"))
+    resolved_target = target.resolve()
+    try:
+        resolved_target.relative_to(out_root)
+    except ValueError as exc:
+        raise RuntimeError(f"Unsafe zip member path: {info.filename}") from exc
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with archive.open(info) as source, target.open("wb") as dest:
+        shutil.copyfileobj(source, dest)
+
+
+def decode_link_path(value: str) -> str:
+    parts = []
+    for raw in value.replace("\\", "/").split("/"):
+        if raw in {"", ".", ".."}:
+            parts.append(raw)
+        else:
+            parts.append(unquote_repeated(raw).replace("\x00", "_").replace("/", "_"))
+    return "/".join(parts)
+
+
+def encode_link_path(value: str) -> str:
+    encoded = []
+    for part in value.split("/"):
+        if part in {"", ".", ".."}:
+            encoded.append(part)
+        else:
+            encoded.append(urllib.parse.quote(part, safe="-._~"))
+    return "/".join(encoded)
+
+
+def split_fragment(target: str) -> Tuple[str, str]:
+    index = target.find("#")
+    if index < 0:
+        return target, ""
+    return target[:index], target[index:]
+
+
+def rewrite_target(
+    target: str,
+    md_safe_rel: str,
+    md_decoded_rel: str,
+    decoded_to_safe: Dict[str, str],
+) -> str:
+    stripped = target.strip()
+    if not stripped or stripped.startswith("#") or stripped.startswith("//"):
+        return target
+    if LINK_SCHEME_RE.match(stripped):
+        return target
+
+    path_part, fragment = split_fragment(stripped)
+    if not path_part or path_part.startswith("/"):
+        return target
+
+    decoded_path = decode_link_path(path_part)
+    decoded_base = posixpath.dirname(md_decoded_rel)
+    decoded_abs = posixpath.normpath(posixpath.join(decoded_base, decoded_path))
+    safe_abs = decoded_to_safe.get(decoded_abs)
+    if not safe_abs:
+        return target
+
+    safe_base = posixpath.dirname(md_safe_rel)
+    safe_rel = posixpath.relpath(safe_abs, safe_base or ".")
+    return encode_link_path(safe_rel) + fragment
+
+
+def rewrite_markdown_text(
+    text: str,
+    md_safe_rel: str,
+    md_decoded_rel: str,
+    decoded_to_safe: Dict[str, str],
+) -> Tuple[str, int]:
+    output = []
+    index = 0
+    rewritten = 0
+
+    while True:
+        start = text.find("](", index)
+        if start < 0:
+            output.append(text[index:])
+            break
+
+        target_start = start + 2
+        depth = 0
+        cursor = target_start
+        fallback_end = None
+        accepted = None  # type: Optional[Tuple[int, str]]
+        while cursor < len(text):
+            char = text[cursor]
+            if char == "\n":
+                break
+            if char == "\\":
+                cursor += 2
+                continue
+            if char == "(":
+                depth += 1
+            elif char == ")":
+                target = text[target_start:cursor]
+                new_target = rewrite_target(target, md_safe_rel, md_decoded_rel, decoded_to_safe)
+                if new_target != target:
+                    accepted = (cursor, new_target)
+                    break
+
+                if depth == 0 and fallback_end is None:
+                    next_char = text[cursor + 1] if cursor + 1 < len(text) else ""
+                    target_is_external = bool(LINK_SCHEME_RE.match(target.strip()))
+                    if target_is_external or next_char not in {"/", "%"}:
+                        fallback_end = cursor
+                elif depth > 0:
+                    depth -= 1
+            cursor += 1
+
+        if accepted:
+            cursor, new_target = accepted
+            rewritten += 1
+        elif fallback_end is not None:
+            cursor = fallback_end
+            target = text[target_start:cursor]
+            new_target = rewrite_target(target, md_safe_rel, md_decoded_rel, decoded_to_safe)
+            if new_target != target:
+                rewritten += 1
+        else:
+            output.append(text[index:])
+            break
+
+        output.append(text[index:target_start])
+        output.append(new_target)
+        output.append(")")
+        index = cursor + 1
+
+    return "".join(output), rewritten
+
+
+def rewrite_markdown_links(
+    out_dir: Path,
+    decoded_to_safe: Dict[str, str],
+    safe_to_decoded: Dict[str, str],
+) -> int:
+    rewritten = 0
+    for path in out_dir.rglob("*.md"):
+        safe_rel = path.relative_to(out_dir).as_posix()
+        decoded_rel = safe_to_decoded.get(safe_rel)
+        if not decoded_rel:
+            continue
+
+        text = path.read_text(encoding="utf-8")
+        new_text, count = rewrite_markdown_text(text, safe_rel, decoded_rel, decoded_to_safe)
+        if count:
+            path.write_text(new_text, encoding="utf-8")
+            rewritten += count
+    return rewritten
+
+
+def display_path(path: Path) -> str:
+    try:
+        return path.relative_to(ROOT).as_posix()
+    except ValueError:
+        return path.as_posix()
+
+
+def unzip(zip_path: Path, out_dir: Optional[Path] = None) -> Tuple[Path, Dict[str, int]]:
+    if out_dir is None:
+        out_dir = zip_path.with_suffix("")
+    elif not out_dir.is_absolute():
+        out_dir = ROOT / out_dir
+
     out_dir.mkdir(parents=True, exist_ok=True)
-    renamed_entries = 0
-    extracted_files = 0
-
     with zipfile.ZipFile(zip_path) as archive:
-        for info in archive.infolist():
-            if info.filename.endswith("/") and not info.is_dir():
-                continue
+        plan, decoded_to_safe, safe_to_decoded, stats = build_extraction_plan(archive)
+        for info, _decoded_rel, safe_rel in plan:
+            safe_extract_member(archive, info, out_dir, safe_rel)
 
-            raw_parts, safe_parts = safe_zip_parts(info.filename, info.is_dir())
-            if raw_parts != safe_parts:
-                renamed_entries += 1
-
-            target = out_dir.joinpath(*safe_parts)
-            if info.is_dir():
-                target.mkdir(parents=True, exist_ok=True)
-                continue
-
-            target.parent.mkdir(parents=True, exist_ok=True)
-            if target.exists():
-                target = unique_collision_path(target)
-                renamed_entries += 1
-
-            with archive.open(info) as source, target.open("wb") as dest:
-                shutil.copyfileobj(source, dest)
-            extracted_files += 1
-
-    return out_dir, renamed_entries, extracted_files
+    stats["rewritten_links"] = rewrite_markdown_links(out_dir, decoded_to_safe, safe_to_decoded)
+    print(
+        "safe unzip: "
+        f"extracted={stats['extracted_files']} "
+        f"normalized={stats['normalized_paths']} "
+        f"shortened={stats['shortened_paths']} "
+        f"collisions={stats['collisions']} "
+        f"rewritten_links={stats['rewritten_links']}",
+        file=sys.stderr,
+    )
+    return out_dir, stats
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Request a Notion recursive export zip with token_v2.",
-        usage='%(prog)s "<Notion URL or page_id>" [--type {markdown,html,pdf}] [--timeout TIMEOUT] [--no-unzip]',
+        usage='%(prog)s ["<Notion URL or page_id>"] [--type {markdown,html,pdf}] [--timeout TIMEOUT] [--no-unzip] [--unzip-only ZIP] [--out-dir DIR]',
     )
-    parser.add_argument("page", metavar="PAGE", help="Notion page URL or page ID")
+    parser.add_argument("page", nargs="?", metavar="PAGE", help="Notion page URL or page ID")
     parser.add_argument("--type", choices=("markdown", "html", "pdf"), default="markdown")
     parser.add_argument("--timeout", type=int, default=900)
     parser.add_argument("--no-unzip", action="store_true")
+    parser.add_argument("--unzip-only", type=Path, help="Safely extract an existing Notion export zip and exit")
+    parser.add_argument("--out-dir", type=Path, help="Output directory for --unzip-only or export extraction")
     args = parser.parse_args()
+
+    if args.unzip_only:
+        zip_path = args.unzip_only if args.unzip_only.is_absolute() else ROOT / args.unzip_only
+        out_dir, unzip_stats = unzip(zip_path, args.out_dir)
+        print(json.dumps({
+            "zip": display_path(zip_path),
+            "bytes": zip_path.stat().st_size,
+            "unzipped": display_path(out_dir),
+            "unzip": unzip_stats,
+        }, ensure_ascii=False, indent=2))
+        return 0
+
+    if not args.page:
+        parser.error("page is required unless --unzip-only is used")
 
     d = load_download_module()
     try:
@@ -378,10 +617,9 @@ def main() -> int:
         "bytes": zip_path.stat().st_size,
     }
     if not args.no_unzip:
-        out_dir, renamed_entries, extracted_files = unzip(zip_path)
-        result["unzipped"] = out_dir.relative_to(ROOT).as_posix()
-        result["extracted_files"] = extracted_files
-        result["renamed_entries"] = renamed_entries
+        out_dir, unzip_stats = unzip(zip_path, args.out_dir)
+        result["unzipped"] = display_path(out_dir)
+        result["unzip"] = unzip_stats
 
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0

@@ -179,7 +179,7 @@ The main export script:
 5. Downloads the zip with `token_v2 + file_token`, `X-Notion-Space-Id`, and `Referer`.
 6. Saves and safely unzips under `notion-exports/`.
 
-During unzip, path components that exceed filesystem filename limits are shortened by UTF-8 byte length and get a stable hash suffix. The original zip is preserved unchanged.
+During unzip, zip member paths are repeatedly URL-decoded and Unicode NFC normalized. Path components that exceed `NOTION_EXPORT_MAX_FILENAME_BYTES` (default 240 bytes), or relative paths that exceed `NOTION_EXPORT_MAX_RELATIVE_PATH_BYTES` (default 700 bytes), are shortened by UTF-8 byte length and get a stable hash suffix. Local links inside extracted Markdown files are rewritten to the actual extracted paths. The original zip is preserved unchanged.
 
 Expected success output:
 
@@ -188,12 +188,21 @@ Expected success output:
   "zip": "notion-exports/notion-export-....zip",
   "bytes": 123456,
   "unzipped": "notion-exports/notion-export-...",
-  "extracted_files": 42,
-  "renamed_entries": 3
+  "unzip": {
+    "extracted_files": 42,
+    "normalized_paths": 3,
+    "shortened_paths": 1,
+    "collisions": 0,
+    "rewritten_links": 2
+  }
 }
 ```
 
-If `renamed_entries` is greater than `0`, some extracted file or folder names were shortened to avoid filesystem filename/path length errors.
+Use `--unzip-only` to safely re-extract an existing zip without calling Notion:
+
+```bash
+python3 scripts/export_notion_zip_token_v2.py --unzip-only notion-exports/notion-export-....zip --out-dir notion-exports/notion-export-...-safe
+```
 
 ## Common Failures
 

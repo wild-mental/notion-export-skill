@@ -3,16 +3,15 @@ import argparse
 import importlib.util
 import json
 import os
-import re
 import urllib.error
 import urllib.request
 import uuid
 from pathlib import Path
+from typing import Optional
 
 
 ROOT = Path(__file__).resolve().parents[1]
 DOWNLOAD_SCRIPT = ROOT / "scripts" / "download_notion_page.py"
-PAGE_ID_RE = re.compile(r"([0-9a-f]{32})", re.I)
 DEFAULT_ORIGINS = [
     "https://www.notion.so",
     "https://www.notion.com",
@@ -29,18 +28,11 @@ def load_download_module():
     return module
 
 
-def normalize_page_id(value: str) -> str:
-    match = PAGE_ID_RE.search(value)
-    if not match:
-        raise ValueError(f"Could not find a 32-character Notion page ID in: {value}")
-    return match.group(1).lower()
-
-
 def hyphenated_uuid(value: str) -> str:
-    return str(uuid.UUID(normalize_page_id(value)))
+    return str(uuid.UUID(value))
 
 
-def infer_space_id(d) -> str | None:
+def infer_space_id(d) -> Optional[str]:
     explicit = os.environ.get("NOTION_SPACE_ID", "").strip()
     if explicit:
         return explicit
@@ -59,7 +51,7 @@ def infer_space_id(d) -> str | None:
     return None
 
 
-def post_json(origin: str, endpoint: str, payload: dict, token_v2: str, space_id: str | None) -> dict:
+def post_json(origin: str, endpoint: str, payload: dict, token_v2: str, space_id: Optional[str]) -> dict:
     headers = {
         "Cookie": f"token_v2={token_v2}",
         "Content-Type": "application/json",
@@ -106,16 +98,24 @@ def summarize_load_page_chunk(body: dict, page_uuid: str) -> dict:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Check whether token_v2 can read the Notion root block.")
-    parser.add_argument("page", nargs="?", default="374d03212bd480d09d7ff5a9ba7461bf")
+    parser = argparse.ArgumentParser(
+        description="Check whether token_v2 can read the Notion root block.",
+        usage='%(prog)s "<Notion URL or page_id>"',
+    )
+    parser.add_argument("page", metavar="PAGE", help="Notion page URL or page ID")
     args = parser.parse_args()
 
     d = load_download_module()
+    try:
+        page_id = d.normalize_page_id(args.page)
+    except ValueError as exc:
+        parser.error(str(exc))
+
     token_v2 = d.normalize_token_v2(os.environ.get("NOTION_TOKEN_V2", ""))
     if not token_v2:
         raise SystemExit("NOTION_TOKEN_V2 is empty")
 
-    page_uuid = hyphenated_uuid(args.page)
+    page_uuid = hyphenated_uuid(page_id)
     space_id = infer_space_id(d)
     origins = [item.strip().rstrip("/") for item in os.environ.get("NOTION_API_ORIGINS", "").split(",") if item.strip()]
     if not origins:

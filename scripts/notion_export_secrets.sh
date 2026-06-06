@@ -6,6 +6,64 @@ NOTION_EXPORT_KEYCHAIN_ACCOUNT="${NOTION_KEYCHAIN_ACCOUNT:-notion-export}"
 NOTION_EXPORT_CONFIG_DIR="${NOTION_EXPORT_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/notion-export}"
 NOTION_EXPORT_COOKIE_FILE="${NOTION_EXPORT_COOKIE_FILE:-$NOTION_EXPORT_CONFIG_DIR/cookies.env}"
 
+notion_export_print_page_usage() {
+  local script_name="$1"
+  cat >&2 <<USAGE
+Usage: $script_name "<Notion URL or page_id>"
+
+Examples:
+  $script_name "https://www.notion.so/workspace/Page-0123456789abcdef0123456789abcdef"
+  $script_name "0123456789abcdef0123456789abcdef"
+  $script_name "01234567-89ab-cdef-0123-456789abcdef"
+USAGE
+}
+
+notion_export_valid_page_arg() {
+  local value="$1"
+  local bare_page_id_re='^[0-9A-Fa-f]{32}$'
+  local uuid_page_id_re='^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$'
+  local page_id_in_text_re='(^|[^0-9A-Fa-f])([0-9A-Fa-f]{32})([^0-9A-Fa-f]|$)'
+  local uuid_in_text_re='(^|[^0-9A-Fa-f])([0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12})([^0-9A-Fa-f]|$)'
+  local without_scheme host locator
+
+  [[ -n "$value" ]] || return 1
+
+  if [[ "$value" =~ $bare_page_id_re || "$value" =~ $uuid_page_id_re ]]; then
+    return 0
+  fi
+
+  [[ "$value" =~ ^https?://[^[:space:]/?#]+[^[:space:]]*$ ]] || return 1
+  without_scheme="${value#*://}"
+  host="${without_scheme%%[/?#]*}"
+  locator="${without_scheme#"$host"}"
+  [[ -n "$host" && -n "$locator" ]] || return 1
+
+  [[ "$locator" =~ $page_id_in_text_re || "$locator" =~ $uuid_in_text_re ]]
+}
+
+notion_export_require_page_arg() {
+  local script_name="$1"
+  shift
+
+  if [[ "$#" -ne 1 ]]; then
+    if [[ "$#" -eq 0 ]]; then
+      echo "Error: missing Notion URL or page_id." >&2
+    else
+      echo "Error: expected exactly one Notion URL or page_id argument." >&2
+    fi
+    echo >&2
+    notion_export_print_page_usage "$script_name"
+    return 2
+  fi
+
+  if ! notion_export_valid_page_arg "$1"; then
+    echo "Error: expected a valid Notion URL containing a page ID, a 32-character page ID, or a hyphenated UUID page ID." >&2
+    echo >&2
+    notion_export_print_page_usage "$script_name"
+    return 2
+  fi
+}
+
 notion_export_normalize_cookie_value() {
   local value="$1"
   local name="$2"

@@ -4,9 +4,11 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-PAGE_ID="${1:-374d03212bd480d09d7ff5a9ba7461bf}"
 # shellcheck source=scripts/notion_export_secrets.sh
 source "$ROOT_DIR/scripts/notion_export_secrets.sh"
+
+notion_export_require_page_arg "$0" "$@" || exit $?
+PAGE_ID="$1"
 
 preflight_token_access() {
   local tmp

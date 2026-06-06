@@ -17,7 +17,7 @@ token_v2/file_token 로드
 → exportBlock 작업 생성
 → getTasks 폴링
 → token_v2 + file_token + spaceId 컨텍스트로 zip 다운로드
-→ notion-exports/ 아래 저장 및 압축 해제
+→ notion-exports/ 아래 저장 및 안전 압축 해제
 ```
 
 `getSignedFileUrls`는 `HTTP 200`을 반환하면서도 `signedUrls`가 비어 있는 실패 모드가 자주 있으므로, 이미지와 첨부가 중요한 백업에서는 먼저 사용하지 않습니다.
@@ -184,7 +184,7 @@ Export zip 백업:
 ./scripts/export_with_token_v2.sh "<Notion URL or page_id>"
 ```
 
-페이지 인자를 생략하면 스크립트에 설정된 기본 root page를 사용합니다. 일반적인 백업에서는 대상 페이지 URL 또는 page ID를 명시하는 것을 권장합니다.
+페이지 인자는 필수입니다. Notion URL, 32자리 page ID, 또는 하이픈이 포함된 UUID 형식 page ID를 전달해야 합니다.
 
 Notion origin을 바꿔야 할 때:
 
@@ -229,7 +229,7 @@ https://www.notion.so 또는 https://app.notion.com
 | `notion_export_secrets.sh` | OS와 사용자 선택에 따라 secret 저장/조회 backend를 공통 처리 |
 | `save_notion_export_cookies.sh` | `token_v2`와 `file_token`을 숨김 입력으로 받아 선택된 backend에 저장 |
 | `export_with_token_v2.sh` | 메인 진입점. credential 로드, 접근 preflight, Export zip 실행 |
-| `export_notion_zip_token_v2.py` | Notion `exportBlock` 작업 생성, 폴링, zip 다운로드, 압축 해제 |
+| `export_notion_zip_token_v2.py` | Notion `exportBlock` 작업 생성, 폴링, zip 다운로드, 긴 파일명 안전 압축 해제 |
 | `check_token_v2_access.sh` | `token_v2`가 대상 page/block을 읽을 수 있는지 진단 |
 | `check_token_v2_block_access.py` | origin별 block 접근 결과를 JSON으로 보고 |
 | `check_notion_asset_auth.py` | 레거시 `getSignedFileUrls` 동작 점검 |
@@ -287,9 +287,13 @@ Export zip 성공 출력은 대략 아래 형태입니다.
 {
   "zip": "notion-exports/notion-export-....zip",
   "bytes": 123456,
-  "unzipped": "notion-exports/notion-export-..."
+  "unzipped": "notion-exports/notion-export-...",
+  "extracted_files": 42,
+  "renamed_entries": 3
 }
 ```
+
+압축 해제 중 파일명 또는 상대 경로가 파일시스템 한도를 넘으면, 스크립트가 해당 경로 컴포넌트를 UTF-8 byte 기준으로 줄이고 원본 이름 해시를 붙입니다. 원본 zip은 그대로 보존되며, `renamed_entries`가 0보다 크면 압축 해제된 일부 파일/폴더 이름이 축약된 것입니다.
 
 ---
 

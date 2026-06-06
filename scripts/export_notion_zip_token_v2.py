@@ -1,25 +1,29 @@
 #!/usr/bin/env python3
 import argparse
 import datetime as dt
+import hashlib
 import importlib.util
 import json
 import os
-import re
+import posixpath
+import shutil
 import sys
 import time
 import urllib.error
-import urllib.parse
 import urllib.request
 import uuid
 import zipfile
 from pathlib import Path
+from typing import Dict, Optional
 
 
 ROOT = Path(__file__).resolve().parents[1]
 DOWNLOAD_SCRIPT = ROOT / "scripts" / "download_notion_page.py"
 EXPORT_DIR = ROOT / "notion-exports"
-PAGE_ID_RE = re.compile(r"([0-9a-f]{32})", re.I)
 API_ORIGIN = os.environ.get("NOTION_API_ORIGIN", "https://www.notion.so").rstrip("/")
+MAX_EXTRACT_COMPONENT_BYTES = 160
+MAX_EXTRACT_RELATIVE_PATH_BYTES = 700
+MIN_EXTRACT_COMPONENT_BYTES = 48
 
 
 def load_download_module():
@@ -31,18 +35,11 @@ def load_download_module():
     return module
 
 
-def normalize_page_id(value: str) -> str:
-    match = PAGE_ID_RE.search(value)
-    if not match:
-        raise ValueError(f"Could not find a 32-character Notion page ID in: {value}")
-    return match.group(1).lower()
-
-
 def hyphenated_uuid(value: str) -> str:
-    return str(uuid.UUID(normalize_page_id(value)))
+    return str(uuid.UUID(value))
 
 
-def infer_space_id(d) -> str | None:
+def infer_space_id(d) -> Optional[str]:
     explicit = os.environ.get("NOTION_SPACE_ID", "").strip()
     if explicit:
         return explicit
@@ -78,7 +75,7 @@ def normalize_cookie_value(value: str, name: str) -> str:
     return value
 
 
-def notion_headers(token_v2: str, file_token: str, space_id: str) -> dict[str, str]:
+def notion_headers(token_v2: str, file_token: str, space_id: str) -> Dict[str, str]:
     return {
         "Cookie": f"token_v2={token_v2};file_token={file_token}",
         "Content-Type": "application/json",
@@ -103,7 +100,7 @@ def post_json(endpoint: str, payload: dict, token_v2: str, file_token: str, spac
         raise RuntimeError(f"{API_ORIGIN}/api/v3/{endpoint} failed: HTTP {exc.code}: {body}") from exc
 
 
-def find_first_export_url(value) -> str | None:
+def find_first_export_url(value) -> Optional[str]:
     if isinstance(value, dict):
         preferred_keys = ("exportURL", "exportUrl", "url")
         for key in preferred_keys:
@@ -204,23 +201,156 @@ def download_url(url: str, dest: Path, token_v2: str, file_token: str, space_id:
         raise RuntimeError(f"Download failed: HTTP {exc.code}: {body}") from exc
 
 
-def unzip(zip_path: Path) -> Path:
+def byte_len(value: str) -> int:
+    return len(value.encode("utf-8"))
+
+
+def utf8_prefix(value: str, max_bytes: int) -> str:
+    output = []
+    used = 0
+    for char in value:
+        size = len(char.encode("utf-8"))
+        if used + size > max_bytes:
+            break
+        output.append(char)
+        used += size
+    return "".join(output)
+
+
+def shorten_component(component: str, max_bytes: int, preserve_suffix: bool) -> str:
+    component = component.replace("\x00", "_")
+    if byte_len(component) <= max_bytes:
+        return component
+
+    digest = hashlib.sha1(component.encode("utf-8")).hexdigest()[:10]
+    suffix = Path(component).suffix if preserve_suffix else ""
+    if suffix and byte_len(suffix) > min(40, max_bytes - byte_len(digest)):
+        suffix = ""
+
+    marker = f"-{digest}"
+    budget = max_bytes - byte_len(marker) - byte_len(suffix)
+    if budget < 1:
+        return f"{digest}{suffix}"
+
+    stem = component[:-len(suffix)] if suffix else component
+    prefix = utf8_prefix(stem, budget).rstrip(" ._-")
+    if not prefix:
+        prefix = "item"
+    return f"{prefix}{marker}{suffix}"
+
+
+def zip_member_parts(member_name: str) -> list:
+    name = member_name.replace("\\", "/")
+    first_part = name.split("/", 1)[0]
+    if name.startswith("/") or (len(first_part) == 2 and first_part[1] == ":" and first_part[0].isalpha()):
+        raise RuntimeError(f"Refusing to extract unsafe zip member path: {member_name}")
+
+    normalized = posixpath.normpath(name)
+    parts = [part for part in normalized.split("/") if part not in {"", "."}]
+    if not parts or any(part == ".." for part in parts):
+        raise RuntimeError(f"Refusing to extract unsafe zip member path: {member_name}")
+    return parts
+
+
+def safe_zip_parts(member_name: str, is_dir: bool) -> tuple:
+    raw_parts = zip_member_parts(member_name)
+    last_index = len(raw_parts) - 1
+    safe_parts = [
+        shorten_component(
+            part,
+            MAX_EXTRACT_COMPONENT_BYTES,
+            preserve_suffix=(index == last_index and not is_dir),
+        )
+        for index, part in enumerate(raw_parts)
+    ]
+
+    while byte_len("/".join(safe_parts)) > MAX_EXTRACT_RELATIVE_PATH_BYTES:
+        candidates = [
+            (byte_len(part), index)
+            for index, part in enumerate(safe_parts)
+            if byte_len(part) > MIN_EXTRACT_COMPONENT_BYTES
+        ]
+        if not candidates:
+            raise RuntimeError(f"Could not shorten zip member path enough: {member_name}")
+
+        current_bytes, index = max(candidates)
+        overflow = byte_len("/".join(safe_parts)) - MAX_EXTRACT_RELATIVE_PATH_BYTES
+        next_limit = max(
+            MIN_EXTRACT_COMPONENT_BYTES,
+            current_bytes - min(current_bytes - MIN_EXTRACT_COMPONENT_BYTES, overflow + 8),
+        )
+        safe_parts[index] = shorten_component(
+            raw_parts[index],
+            next_limit,
+            preserve_suffix=(index == last_index and not is_dir),
+        )
+
+    return raw_parts, safe_parts
+
+
+def unique_collision_path(path: Path) -> Path:
+    if not path.exists():
+        return path
+
+    suffix = path.suffix
+    stem = path.name[:-len(suffix)] if suffix else path.name
+    digest = hashlib.sha1(str(path).encode("utf-8")).hexdigest()[:8]
+    for index in range(2, 1000):
+        candidate = path.with_name(f"{stem}-{digest}-{index}{suffix}")
+        if not candidate.exists():
+            return candidate
+    raise RuntimeError(f"Could not create a unique extracted path for: {path}")
+
+
+def unzip(zip_path: Path) -> tuple:
     out_dir = zip_path.with_suffix("")
     out_dir.mkdir(parents=True, exist_ok=True)
+    renamed_entries = 0
+    extracted_files = 0
+
     with zipfile.ZipFile(zip_path) as archive:
-        archive.extractall(out_dir)
-    return out_dir
+        for info in archive.infolist():
+            if info.filename.endswith("/") and not info.is_dir():
+                continue
+
+            raw_parts, safe_parts = safe_zip_parts(info.filename, info.is_dir())
+            if raw_parts != safe_parts:
+                renamed_entries += 1
+
+            target = out_dir.joinpath(*safe_parts)
+            if info.is_dir():
+                target.mkdir(parents=True, exist_ok=True)
+                continue
+
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if target.exists():
+                target = unique_collision_path(target)
+                renamed_entries += 1
+
+            with archive.open(info) as source, target.open("wb") as dest:
+                shutil.copyfileobj(source, dest)
+            extracted_files += 1
+
+    return out_dir, renamed_entries, extracted_files
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Request a Notion recursive export zip with token_v2.")
-    parser.add_argument("page", nargs="?", default="374d03212bd480d09d7ff5a9ba7461bf")
+    parser = argparse.ArgumentParser(
+        description="Request a Notion recursive export zip with token_v2.",
+        usage='%(prog)s "<Notion URL or page_id>" [--type {markdown,html,pdf}] [--timeout TIMEOUT] [--no-unzip]',
+    )
+    parser.add_argument("page", metavar="PAGE", help="Notion page URL or page ID")
     parser.add_argument("--type", choices=("markdown", "html", "pdf"), default="markdown")
     parser.add_argument("--timeout", type=int, default=900)
     parser.add_argument("--no-unzip", action="store_true")
     args = parser.parse_args()
 
     d = load_download_module()
+    try:
+        page_id = d.normalize_page_id(args.page)
+    except ValueError as exc:
+        parser.error(str(exc))
+
     token_v2 = d.normalize_token_v2(os.environ.get("NOTION_TOKEN_V2", ""))
     file_token = normalize_cookie_value(os.environ.get("NOTION_FILE_TOKEN", ""), "file_token")
     if not token_v2:
@@ -228,7 +358,6 @@ def main() -> int:
     if not file_token:
         raise SystemExit("NOTION_FILE_TOKEN is empty")
 
-    page_id = normalize_page_id(args.page)
     space_id = infer_space_id(d)
     if not space_id:
         raise SystemExit("Could not infer spaceId. Set NOTION_SPACE_ID and retry.")
@@ -249,8 +378,10 @@ def main() -> int:
         "bytes": zip_path.stat().st_size,
     }
     if not args.no_unzip:
-        out_dir = unzip(zip_path)
+        out_dir, renamed_entries, extracted_files = unzip(zip_path)
         result["unzipped"] = out_dir.relative_to(ROOT).as_posix()
+        result["extracted_files"] = extracted_files
+        result["renamed_entries"] = renamed_entries
 
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0

@@ -11,9 +11,9 @@ import urllib.parse
 import urllib.request
 from collections import deque
 from pathlib import Path
+from typing import Dict, List, Match, Optional, Set, Tuple
 
 
-ROOT_PAGE = "374d03212bd480d09d7ff5a9ba7461bf"
 ROOT = Path(__file__).resolve().parents[1]
 CACHE_DIR = ROOT / ".notion-cache"
 ASSET_MANIFEST_PATH = ROOT / ".notion-assets.json"
@@ -21,22 +21,53 @@ ASSET_MANIFEST_PATH = ROOT / ".notion-assets.json"
 PAGE_TAG_RE = re.compile(r'<page url="([^"]+)"[^>]*>(.*?)</page>', re.DOTALL)
 IMAGE_RE = re.compile(r'!\[([^\]]*)\]\((file://.*?%7d)\)', re.I)
 FILE_RE = re.compile(r'<file src="(file://[^"]+)"></file>')
-PAGE_ID_RE = re.compile(r"([0-9a-f]{32})", re.I)
+BARE_PAGE_ID_RE = re.compile(r"^[0-9a-f]{32}$", re.I)
+BARE_UUID_PAGE_ID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    re.I,
+)
+PAGE_ID_IN_TEXT_RE = re.compile(r"(?<![0-9a-f])([0-9a-f]{32})(?![0-9a-f])", re.I)
+UUID_PAGE_ID_IN_TEXT_RE = re.compile(
+    r"(?<![0-9a-f])([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?![0-9a-f])",
+    re.I,
+)
 TITLE_RE = re.compile(r"^---\s*\n(?P<body>.*?)\n---\s*", re.DOTALL)
 
 
 def normalize_page_id(value: str) -> str:
-    match = PAGE_ID_RE.search(value)
-    if not match:
-        raise ValueError(f"Could not find a 32-character Notion page ID in: {value}")
-    return match.group(1).lower()
+    value = value.strip()
+    if BARE_PAGE_ID_RE.fullmatch(value):
+        return value.lower()
+    if BARE_UUID_PAGE_ID_RE.fullmatch(value):
+        return value.replace("-", "").lower()
+
+    parsed = urllib.parse.urlparse(value)
+    if parsed.scheme in {"http", "https"} and parsed.netloc:
+        locator = urllib.parse.urlunsplit(("", "", parsed.path, parsed.query, parsed.fragment))
+        match = PAGE_ID_IN_TEXT_RE.search(locator)
+        if match:
+            return match.group(1).lower()
+        match = UUID_PAGE_ID_IN_TEXT_RE.search(locator)
+        if match:
+            return match.group(1).replace("-", "").lower()
+
+    raise ValueError(
+        "expected a valid Notion URL containing a page ID, "
+        "a 32-character page ID, or a hyphenated UUID page ID"
+    )
 
 
-def maybe_page_id(value: str) -> str | None:
-    match = PAGE_ID_RE.search(value)
-    if not match:
-        return None
-    return match.group(1).lower()
+def maybe_page_id(value: str) -> Optional[str]:
+    try:
+        return normalize_page_id(value)
+    except ValueError:
+        match = PAGE_ID_IN_TEXT_RE.search(value)
+        if match:
+            return match.group(1).lower()
+        match = UUID_PAGE_ID_IN_TEXT_RE.search(value)
+        if match:
+            return match.group(1).replace("-", "").lower()
+    return None
 
 
 def run_ntn_pages_get(page_id: str) -> str:
@@ -93,7 +124,7 @@ def slugify(value: str, fallback: str) -> str:
     return slug or fallback
 
 
-def unique_path(base_dir: Path, slug: str, used: set[Path]) -> Path:
+def unique_path(base_dir: Path, slug: str, used: Set[Path]) -> Path:
     candidate = base_dir / f"{slug}.md"
     index = 2
     while candidate in used:
@@ -103,7 +134,7 @@ def unique_path(base_dir: Path, slug: str, used: set[Path]) -> Path:
     return candidate
 
 
-def discover_pages(root_id: str) -> tuple[list[str], dict[str, str], dict[str, str]]:
+def discover_pages(root_id: str) -> Tuple[List[str], Dict[str, str], Dict[str, str]]:
     queue = deque([root_id])
     order: list[str] = []
     markdown_by_id: dict[str, str] = {}
@@ -130,7 +161,7 @@ def discover_pages(root_id: str) -> tuple[list[str], dict[str, str], dict[str, s
     return order, markdown_by_id, title_by_id
 
 
-def assign_paths(order: list[str], title_by_id: dict[str, str], root_id: str) -> dict[str, Path]:
+def assign_paths(order: List[str], title_by_id: Dict[str, str], root_id: str) -> Dict[str, Path]:
     pages_dir = ROOT / "pages"
     used: set[Path] = set()
     paths: dict[str, Path] = {}
@@ -158,13 +189,13 @@ def page_label(markup: str, fallback: str) -> str:
 def replace_page_links(
     markdown: str,
     from_path: Path,
-    paths: dict[str, Path],
-    title_by_id: dict[str, str],
-    link_log: list[tuple[str, str, str]],
-) -> tuple[str, int]:
+    paths: Dict[str, Path],
+    title_by_id: Dict[str, str],
+    link_log: List[Tuple[str, str, str]],
+) -> Tuple[str, int]:
     count = 0
 
-    def repl(match: re.Match[str]) -> str:
+    def repl(match: Match[str]) -> str:
         nonlocal count
         url = match.group(1)
         body = match.group(2)
@@ -193,7 +224,7 @@ def sanitize_filename(value: str, fallback: str) -> str:
     return value or fallback
 
 
-def unique_asset_path(asset_dir: Path, filename: str, used: set[Path]) -> Path:
+def unique_asset_path(asset_dir: Path, filename: str, used: Set[Path]) -> Path:
     candidate = asset_dir / filename
     stem = candidate.stem
     suffix = candidate.suffix
@@ -205,7 +236,7 @@ def unique_asset_path(asset_dir: Path, filename: str, used: set[Path]) -> Path:
     return candidate
 
 
-def load_asset_manifest() -> dict[str, Path]:
+def load_asset_manifest() -> Dict[str, Path]:
     if not ASSET_MANIFEST_PATH.exists():
         return {}
     try:
@@ -230,7 +261,7 @@ def load_asset_manifest() -> dict[str, Path]:
     return manifest
 
 
-def write_asset_manifest(source_to_path: dict[str, Path]) -> None:
+def write_asset_manifest(source_to_path: Dict[str, Path]) -> None:
     manifest = {}
     for source, path in sorted(source_to_path.items()):
         if not path.exists() or path.stat().st_size == 0:
@@ -242,7 +273,7 @@ def write_asset_manifest(source_to_path: dict[str, Path]) -> None:
     )
 
 
-def extract_token_value(raw: str) -> str | None:
+def extract_token_value(raw: str) -> Optional[str]:
     raw = raw.strip()
     if not raw:
         return None
@@ -307,12 +338,12 @@ def normalize_token_v2(value: str) -> str:
     return value
 
 
-def get_session_token() -> str | None:
+def get_session_token() -> Optional[str]:
     token = normalize_token_v2(os.environ.get("NOTION_TOKEN_V2", ""))
     return token or None
 
 
-def extract_signed_url(body: dict) -> str | None:
+def extract_signed_url(body: dict) -> Optional[str]:
     values = body.get("signedUrls") or body.get("urls") or []
     if not values:
         return None
@@ -324,7 +355,7 @@ def extract_signed_url(body: dict) -> str | None:
     return signed
 
 
-def signed_file_url(ref: dict, api_token: str | None, session_token: str | None) -> str | None:
+def signed_file_url(ref: dict, api_token: Optional[str], session_token: Optional[str]) -> Optional[str]:
     payload = {
         "urls": [
             {
@@ -363,8 +394,8 @@ def requote_url(value: str) -> str:
 def download_file(
     url: str,
     path: Path,
-    api_token: str | None = None,
-    session_token: str | None = None,
+    api_token: Optional[str] = None,
+    session_token: Optional[str] = None,
 ) -> None:
     headers = {"User-Agent": "notion-local-backup/1.0"}
     if "notion.so/" in url:
@@ -391,8 +422,8 @@ def parse_image_ref(file_url: str) -> dict:
 
 def resolve_and_download_ref(
     ref: dict,
-    api_token: str | None,
-    session_token: str | None,
+    api_token: Optional[str],
+    session_token: Optional[str],
     local_path: Path,
     kind: str,
 ) -> bool:
@@ -431,9 +462,9 @@ def resolve_and_download_ref(
 def localize_attachments(
     markdown: str,
     from_path: Path,
-    source_to_path: dict[str, Path],
-    used_assets: set[Path],
-) -> tuple[str, int, int, list[str]]:
+    source_to_path: Dict[str, Path],
+    used_assets: Set[Path],
+) -> Tuple[str, int, int, List[str]]:
     image_matches = list(IMAGE_RE.finditer(markdown))
     file_matches = list(FILE_RE.finditer(markdown))
     if not image_matches and not file_matches:
@@ -466,7 +497,7 @@ def localize_attachments(
             return candidate
         return unique_asset_path(asset_dir, filename, used_assets)
 
-    def localize_ref(file_url: str, kind: str) -> Path | None:
+    def localize_ref(file_url: str, kind: str) -> Optional[Path]:
         try:
             ref = parse_image_ref(file_url)
         except json.JSONDecodeError:
@@ -493,7 +524,7 @@ def localize_attachments(
         source_to_path[source] = local_path
         return local_path
 
-    def image_repl(match: re.Match[str]) -> str:
+    def image_repl(match: Match[str]) -> str:
         nonlocal image_count
         alt = match.group(1)
         file_url = match.group(2)
@@ -505,7 +536,7 @@ def localize_attachments(
         rel = os.path.relpath(local_path, start=from_path.parent).replace(os.sep, "/")
         return f"![{alt}]({rel})"
 
-    def file_repl(match: re.Match[str]) -> str:
+    def file_repl(match: Match[str]) -> str:
         nonlocal file_count
         file_url = match.group(1)
         ref = parse_image_ref(file_url)
@@ -523,10 +554,10 @@ def localize_attachments(
 
 
 def write_pages(
-    order: list[str],
-    markdown_by_id: dict[str, str],
-    title_by_id: dict[str, str],
-    paths: dict[str, Path],
+    order: List[str],
+    markdown_by_id: Dict[str, str],
+    title_by_id: Dict[str, str],
+    paths: Dict[str, Path],
 ) -> dict:
     source_to_path = load_asset_manifest()
     used_assets: set[Path] = set(source_to_path.values())
@@ -590,11 +621,18 @@ def verify(summary: dict) -> dict:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Recursively export a Notion page with assets.")
-    parser.add_argument("page", nargs="?", default=ROOT_PAGE, help="Root Notion page ID or URL")
+    parser = argparse.ArgumentParser(
+        description="Recursively export a Notion page with assets.",
+        usage='%(prog)s "<Notion URL or page_id>"',
+    )
+    parser.add_argument("page", metavar="PAGE", help="Root Notion page URL or page ID")
     args = parser.parse_args()
 
-    root_id = normalize_page_id(args.page)
+    try:
+        root_id = normalize_page_id(args.page)
+    except ValueError as exc:
+        parser.error(str(exc))
+
     order, markdown_by_id, title_by_id = discover_pages(root_id)
     paths = assign_paths(order, title_by_id, root_id)
     summary = write_pages(order, markdown_by_id, title_by_id, paths)

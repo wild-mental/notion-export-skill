@@ -52,7 +52,7 @@ Then run an export:
 ./scripts/export_with_token_v2.sh "<Notion URL or page_id>"
 ```
 
-If no page argument is provided, the local script uses its configured default root page. For general backups, pass the target page explicitly.
+The page argument is required. Pass a Notion URL, a 32-character page ID, or a hyphenated UUID page ID.
 
 The export script reads credentials in this order:
 
@@ -112,7 +112,7 @@ Use `NOTION_SAVE_COOKIES=0` with `export_with_token_v2.sh` when prompted cookies
 | `notion_export_secrets.sh` | Shared secret backend selection, read, save, and cookie normalization |
 | `save_notion_export_cookies.sh` | Store `token_v2` + `file_token` in the selected local secret backend |
 | `export_with_token_v2.sh` | Main entry: credential load, preflight, recursive export zip |
-| `export_notion_zip_token_v2.py` | Enqueue, poll, download, and unzip the Notion export |
+| `export_notion_zip_token_v2.py` | Enqueue, poll, download, and safely unzip the Notion export |
 | `check_token_v2_access.sh` | Diagnose `token_v2` page access |
 | `check_token_v2_block_access.py` | Per-origin block-access report |
 | `check_notion_asset_auth.py` | Probe legacy `getSignedFileUrls` |
@@ -182,7 +182,9 @@ The main export script:
 3. Enqueues a Notion internal `exportBlock` task.
 4. Polls `getTasks` until an export zip URL appears.
 5. Downloads the zip with `token_v2 + file_token`, `X-Notion-Space-Id`, and `Referer`.
-6. Saves and unzips under `notion-exports/`.
+6. Saves and safely unzips under `notion-exports/`.
+
+During unzip, path components that exceed filesystem filename limits are shortened by UTF-8 byte length and get a stable hash suffix. The original zip is preserved unchanged.
 
 Expected success output:
 
@@ -190,9 +192,13 @@ Expected success output:
 {
   "zip": "notion-exports/notion-export-....zip",
   "bytes": 123456,
-  "unzipped": "notion-exports/notion-export-..."
+  "unzipped": "notion-exports/notion-export-...",
+  "extracted_files": 42,
+  "renamed_entries": 3
 }
 ```
+
+If `renamed_entries` is greater than `0`, some extracted file or folder names were shortened to avoid filesystem filename/path length errors.
 
 ## Common Failures
 

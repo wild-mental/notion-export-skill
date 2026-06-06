@@ -38,63 +38,12 @@ PY
   return 1
 }
 
-loaded_from_secret_store=0
-prompted=0
-
-if [[ -z "${NOTION_TOKEN_V2:-}" ]]; then
-  NOTION_TOKEN_V2="$(notion_export_read_secret "$NOTION_EXPORT_TOKEN_SERVICE")"
-  if [[ -n "${NOTION_TOKEN_V2:-}" ]]; then
-    loaded_from_secret_store=1
-  fi
-fi
-
-if [[ -z "${NOTION_FILE_TOKEN:-}" ]]; then
-  NOTION_FILE_TOKEN="$(notion_export_read_secret "$NOTION_EXPORT_FILE_SERVICE")"
-  if [[ -n "${NOTION_FILE_TOKEN:-}" ]]; then
-    loaded_from_secret_store=1
-  fi
-fi
-
-if [[ -z "${NOTION_TOKEN_V2:-}" ]]; then
-  NOTION_TOKEN_V2="$(notion_export_prompt_secret "NOTION_TOKEN_V2: ")"
-  prompted=1
-fi
-
-if [[ -z "${NOTION_FILE_TOKEN:-}" ]]; then
-  NOTION_FILE_TOKEN="$(notion_export_prompt_secret "NOTION_FILE_TOKEN: ")"
-  prompted=1
-fi
-
-if [[ -z "${NOTION_TOKEN_V2:-}" || -z "${NOTION_FILE_TOKEN:-}" ]]; then
-  echo "Both NOTION_TOKEN_V2 and NOTION_FILE_TOKEN are required." >&2
-  exit 1
-fi
-
-export NOTION_TOKEN_V2
-export NOTION_FILE_TOKEN
+notion_export_require_stored_export_cookies || exit $?
 
 if ! preflight_token_access; then
-  if [[ "$loaded_from_secret_store" == "1" && "${NOTION_FORCE_PROMPT:-0}" != "1" ]]; then
-    echo "Stored token_v2 cannot access this page. Enter fresh cookies." >&2
-    NOTION_TOKEN_V2="$(notion_export_prompt_secret "NOTION_TOKEN_V2: ")"
-    NOTION_FILE_TOKEN="$(notion_export_prompt_secret "NOTION_FILE_TOKEN: ")"
-    export NOTION_TOKEN_V2
-    export NOTION_FILE_TOKEN
-    prompted=1
-    preflight_token_access
-  else
-    echo "token_v2 access preflight failed." >&2
-    exit 1
-  fi
-fi
-
-if [[ "$prompted" == "1" && "${NOTION_SAVE_COOKIES:-}" != "0" ]]; then
-  IFS= read -r -p "Save/update these cookies for future runs? [y/N]: " save_answer
-  if [[ "$save_answer" =~ ^[Yy]$ ]]; then
-    save_token_v2="$(notion_export_normalize_cookie_value "$NOTION_TOKEN_V2" "token_v2")"
-    save_file_token="$(notion_export_normalize_cookie_value "$NOTION_FILE_TOKEN" "file_token")"
-    notion_export_save_credentials "$save_token_v2" "$save_file_token"
-  fi
+  notion_export_print_cookie_setup_instructions \
+    "token_v2 access preflight failed. Refresh cookies from the browser profile/account that can open this page."
+  exit 1
 fi
 
 python3 scripts/export_notion_zip_token_v2.py "$PAGE_ID" --type markdown

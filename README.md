@@ -34,7 +34,7 @@ token_v2/file_token 로드
   - Linux: `secret-tool` (`libsecret` / GNOME Keyring)
   - 그 외: 사용자 확인 후 chmod 600 로컬 파일 fallback
 
-쿠키는 Notion 브라우저 세션 전체 권한을 가진 secret입니다. 채팅에 붙여넣지 말고, 스크립트의 숨김 터미널 입력으로만 전달하세요.
+쿠키는 Notion 브라우저 세션 전체 권한을 가진 secret입니다. 채팅에 붙여넣지 말고, 저장 스크립트의 숨김 터미널 입력으로만 전달하세요.
 
 ---
 
@@ -100,12 +100,17 @@ chmod +x scripts/*.sh scripts/*.py
 
 ## 토큰 저장 방식
 
-스크립트는 credentials를 아래 순서로 읽습니다.
+`export_with_token_v2.sh`는 본 작업 전에 `token_v2`와 `file_token` 조회 가능 여부를 먼저 검사합니다.
 
 ```text
 1. NOTION_TOKEN_V2 / NOTION_FILE_TOKEN 환경 변수
 2. 로컬 secret backend
-3. 숨김 터미널 입력
+```
+
+두 토큰 중 하나라도 조회되지 않으면 export를 시작하지 않고 종료합니다. 이때 사용자는 채팅에 쿠키를 붙여넣지 말고, 로컬 터미널에서 아래 저장 스크립트를 직접 실행한 뒤 export를 다시 실행합니다.
+
+```bash
+./scripts/save_notion_export_cookies.sh
 ```
 
 `NOTION_SECRET_BACKEND`로 저장 방식을 고를 수 있습니다.
@@ -116,7 +121,7 @@ chmod +x scripts/*.sh scripts/*.py
 | `keychain` | macOS Keychain 강제 |
 | `secret-tool` | Linux `secret-tool` 강제 |
 | `file` | chmod 600 로컬 파일 저장 강제 |
-| `none` | 저장하지 않음. 환경 변수 또는 프롬프트만 사용 |
+| `none` | 저장하지 않음. export 실행 시 환경 변수 2개가 모두 필요 |
 
 `auto`의 선택 순서:
 
@@ -155,16 +160,10 @@ NOTION_SECRET_BACKEND=file ./scripts/save_notion_export_cookies.sh
 NOTION_ALLOW_PLAINTEXT_STORE=1 NOTION_SECRET_BACKEND=file ./scripts/save_notion_export_cookies.sh
 ```
 
-저장을 원하지 않으면:
+저장하지 않고 한 번만 실행하려면 두 환경 변수를 모두 전달합니다.
 
 ```bash
-NOTION_SECRET_BACKEND=none ./scripts/export_with_token_v2.sh "<Notion URL or page_id>"
-```
-
-`export_with_token_v2.sh`가 실행 중 새 쿠키를 입력받은 경우, 기본적으로 저장 여부를 묻습니다. 저장 질문을 끄려면 `NOTION_SAVE_COOKIES=0`을 사용합니다.
-
-```bash
-NOTION_SAVE_COOKIES=0 ./scripts/export_with_token_v2.sh "<Notion URL or page_id>"
+NOTION_SECRET_BACKEND=none NOTION_TOKEN_V2=<token_v2> NOTION_FILE_TOKEN=<file_token> ./scripts/export_with_token_v2.sh "<Notion URL or page_id>"
 ```
 
 ---
@@ -364,8 +363,8 @@ secret_backend:
 contract:
   prefer=token_v2 + file_token recursive Export zip
   avoid=getSignedFileUrls first
-  secrets=hidden terminal prompts only; never ask user to paste into chat
-  credential_order=env vars -> local secret backend -> hidden prompts
+  secrets=save script hidden terminal prompts only; never ask user to paste into chat
+  credential_order=env vars -> local secret backend; if missing, tell user to run save_notion_export_cookies.sh
   report=zip path, extracted folder, zip bytes, access diagnostics, remaining manual step
 ```
 

@@ -54,23 +54,20 @@ Then run an export:
 
 The page argument is required. Pass a Notion URL, a 32-character page ID, or a hyphenated UUID page ID.
 
-The export script reads credentials in this order:
+Before starting the export, `export_with_token_v2.sh` checks whether both `token_v2` and `file_token` are available.
 
 ```text
 1. NOTION_TOKEN_V2 / NOTION_FILE_TOKEN environment variables
 2. local secret backend
-3. hidden terminal prompts
 ```
 
-It runs a `token_v2` page-access preflight before creating the export task. If stored credentials cannot read the page, it prompts for fresh cookies.
+If either token is missing, the export script exits before starting the Notion task. Tell the user to run the local storage script in their terminal, then retry the export:
 
-If it prompts, it may ask:
-
-```text
-Save/update these cookies for future runs? [y/N]:
+```bash
+./scripts/save_notion_export_cookies.sh
 ```
 
-The user must enter cookie values only in their local terminal. Never ask them to paste these secrets into chat.
+The export script does not prompt for cookie values. The user must enter cookie values only through `save_notion_export_cookies.sh` or provide both environment variables for that run. Never ask them to paste these secrets into chat.
 
 ## Secret Backend
 
@@ -84,7 +81,7 @@ auto otherwise                    # chmod 600 local file fallback after confirma
 NOTION_SECRET_BACKEND=keychain     # force macOS Keychain
 NOTION_SECRET_BACKEND=secret-tool  # force Linux secret-tool
 NOTION_SECRET_BACKEND=file         # force local chmod 600 file fallback
-NOTION_SECRET_BACKEND=none         # never save, prompt/env only
+NOTION_SECRET_BACKEND=none         # never save; export requires both env vars
 ```
 
 Default secret names:
@@ -101,9 +98,7 @@ File fallback path:
 ${XDG_CONFIG_HOME:-$HOME/.config}/notion-export/cookies.env
 ```
 
-The file fallback stores base64-encoded values in a chmod 600 file. It is not encrypted at rest, so the script asks for confirmation unless `NOTION_ALLOW_PLAINTEXT_STORE=1` is set.
-
-Use `NOTION_SAVE_COOKIES=0` with `export_with_token_v2.sh` when prompted cookies should not be saved.
+The file fallback stores base64-encoded values in a chmod 600 file. It is not encrypted at rest, so the storage script asks for confirmation unless `NOTION_ALLOW_PLAINTEXT_STORE=1` is set.
 
 ## Bundled Scripts
 
@@ -124,7 +119,7 @@ Prefer running the workspace `scripts/` copies because they write exports and su
 ## Cookie Rules
 
 - `token_v2` and `file_token` are full browser-session secrets.
-- Collect them only through hidden terminal prompts.
+- Collect them only through the storage script's hidden terminal prompts.
 - Do not print, log, or commit them.
 - Store them only in a local secret backend after explicit user action/confirmation.
 - Prefer macOS Keychain or Linux `secret-tool`; use file fallback only when the user accepts plaintext-at-rest risk.

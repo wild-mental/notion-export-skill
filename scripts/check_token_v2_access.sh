@@ -10,13 +10,5 @@ source "$ROOT_DIR/scripts/notion_export_secrets.sh"
 notion_export_require_page_arg "$0" "$@" || exit $?
 PAGE_ID="$1"
 
-if [[ -z "${NOTION_TOKEN_V2:-}" ]]; then
-  NOTION_TOKEN_V2="$(notion_export_read_secret "$NOTION_EXPORT_TOKEN_SERVICE")"
-fi
-
-if [[ -z "${NOTION_TOKEN_V2:-}" ]]; then
-  NOTION_TOKEN_V2="$(notion_export_prompt_secret "NOTION_TOKEN_V2: ")"
-fi
-
-export NOTION_TOKEN_V2
+notion_export_require_stored_token_v2 || exit $?
 python3 scripts/check_token_v2_block_access.py "$PAGE_ID"

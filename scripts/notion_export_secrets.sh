@@ -64,6 +64,66 @@ notion_export_require_page_arg() {
   fi
 }
 
+notion_export_print_cookie_setup_instructions() {
+  local reason="$1"
+  local save_command="${2:-./scripts/save_notion_export_cookies.sh}"
+  local backend
+  backend="$(notion_export_backend)"
+
+  echo "$reason" >&2
+  echo >&2
+  if [[ "$backend" == "none" ]]; then
+    echo "NOTION_SECRET_BACKEND=none disables stored cookie lookup." >&2
+    echo "Provide both environment variables for this run, or unset/change NOTION_SECRET_BACKEND before running the storage script." >&2
+    echo >&2
+  fi
+  echo "Store both Notion export cookies locally, then retry:" >&2
+  echo "  $save_command" >&2
+  echo >&2
+  echo "Alternatively, provide both values as environment variables for this run:" >&2
+  echo "  NOTION_TOKEN_V2=<token_v2> NOTION_FILE_TOKEN=<file_token> ./scripts/export_with_token_v2.sh \"<Notion URL or page_id>\"" >&2
+  echo >&2
+  echo "Do not paste these cookie values into chat." >&2
+}
+
+notion_export_require_stored_export_cookies() {
+  local missing=()
+
+  if [[ -z "${NOTION_TOKEN_V2:-}" ]]; then
+    NOTION_TOKEN_V2="$(notion_export_read_secret "$NOTION_EXPORT_TOKEN_SERVICE")"
+  fi
+
+  if [[ -z "${NOTION_FILE_TOKEN:-}" ]]; then
+    NOTION_FILE_TOKEN="$(notion_export_read_secret "$NOTION_EXPORT_FILE_SERVICE")"
+  fi
+
+  [[ -n "${NOTION_TOKEN_V2:-}" ]] || missing+=("NOTION_TOKEN_V2")
+  [[ -n "${NOTION_FILE_TOKEN:-}" ]] || missing+=("NOTION_FILE_TOKEN")
+
+  if (( ${#missing[@]} > 0 )); then
+    notion_export_print_cookie_setup_instructions \
+      "Missing required Notion export cookies: ${missing[*]}"
+    return 1
+  fi
+
+  export NOTION_TOKEN_V2
+  export NOTION_FILE_TOKEN
+}
+
+notion_export_require_stored_token_v2() {
+  if [[ -z "${NOTION_TOKEN_V2:-}" ]]; then
+    NOTION_TOKEN_V2="$(notion_export_read_secret "$NOTION_EXPORT_TOKEN_SERVICE")"
+  fi
+
+  if [[ -z "${NOTION_TOKEN_V2:-}" ]]; then
+    notion_export_print_cookie_setup_instructions \
+      "Missing required Notion export cookie: NOTION_TOKEN_V2"
+    return 1
+  fi
+
+  export NOTION_TOKEN_V2
+}
+
 notion_export_normalize_cookie_value() {
   local value="$1"
   local name="$2"

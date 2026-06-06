@@ -297,7 +297,9 @@ Export zip 성공 출력은 대략 아래 형태입니다.
 }
 ```
 
-압축 해제 중 zip 내부 경로는 반복 URL-decode 후 Unicode NFC로 정규화합니다. 파일명 컴포넌트가 `NOTION_EXPORT_MAX_FILENAME_BYTES` 한도(기본 240 bytes)를 넘거나 상대 경로가 `NOTION_EXPORT_MAX_RELATIVE_PATH_BYTES` 한도(기본 700 bytes)를 넘으면 UTF-8 byte 기준으로 줄이고 원본 이름 해시를 붙입니다. Markdown 파일 안의 로컬 링크도 실제 추출 경로에 맞게 보정합니다. 원본 zip은 그대로 보존됩니다.
+압축 해제 중 zip 내부 경로는 반복 URL-decode 후 Unicode NFC로 정규화합니다. 파일명 컴포넌트가 `NOTION_EXPORT_MAX_FILENAME_BYTES` 한도(기본 240 bytes)를 넘거나 상대 경로가 `NOTION_EXPORT_MAX_RELATIVE_PATH_BYTES` 한도(기본 700 bytes)를 넘으면 UTF-8 byte 기준으로 줄이고 원본 이름 해시를 붙입니다. 원본 zip은 그대로 보존됩니다.
+
+Markdown 파일 안의 로컬 링크는 실제 추출 경로에 맞게 보정하고, percent-encoded URL target 대신 `[텍스트](<실제 한글 경로/파일.md>)` 형태의 angle-bracket 로컬 경로로 기록합니다. Cursor Markdown Preview처럼 로컬 링크 target을 URL-decode하지 않는 resolver에서도 추출된 파일을 찾을 수 있게 하기 위한 동작입니다.
 
 이미 내려받은 zip만 다시 안전하게 풀 때:
 

@@ -393,14 +393,16 @@ def decode_link_path(value: str) -> str:
     return "/".join(parts)
 
 
-def encode_link_path(value: str) -> str:
-    encoded = []
-    for part in value.split("/"):
-        if part in {"", ".", ".."}:
-            encoded.append(part)
-        else:
-            encoded.append(urllib.parse.quote(part, safe="-._~"))
-    return "/".join(encoded)
+def markdown_local_target(value: str, fragment: str = "") -> str:
+    escaped = value.replace("<", "%3C").replace(">", "%3E")
+    return f"<{escaped}{fragment}>"
+
+
+def unwrap_markdown_target(value: str) -> str:
+    stripped = value.strip()
+    if stripped.startswith("<") and stripped.endswith(">"):
+        return stripped[1:-1]
+    return stripped
 
 
 def split_fragment(target: str) -> Tuple[str, str]:
@@ -416,7 +418,7 @@ def rewrite_target(
     md_decoded_rel: str,
     decoded_to_safe: Dict[str, str],
 ) -> str:
-    stripped = target.strip()
+    stripped = unwrap_markdown_target(target)
     if not stripped or stripped.startswith("#") or stripped.startswith("//"):
         return target
     if LINK_SCHEME_RE.match(stripped):
@@ -435,7 +437,7 @@ def rewrite_target(
 
     safe_base = posixpath.dirname(md_safe_rel)
     safe_rel = posixpath.relpath(safe_abs, safe_base or ".")
-    return encode_link_path(safe_rel) + fragment
+    return markdown_local_target(safe_rel, fragment)
 
 
 def rewrite_markdown_text(
@@ -455,6 +457,22 @@ def rewrite_markdown_text(
             break
 
         target_start = start + 2
+        if target_start < len(text) and text[target_start] == "<":
+            angle_end = text.find(">", target_start + 1)
+            line_end = text.find("\n", target_start)
+            if angle_end >= 0 and (line_end < 0 or angle_end < line_end):
+                close_index = angle_end + 1
+                if close_index < len(text) and text[close_index] == ")":
+                    target = text[target_start:close_index]
+                    new_target = rewrite_target(target, md_safe_rel, md_decoded_rel, decoded_to_safe)
+                    if new_target != target:
+                        rewritten += 1
+                    output.append(text[index:target_start])
+                    output.append(new_target)
+                    output.append(")")
+                    index = close_index + 1
+                    continue
+
         depth = 0
         cursor = target_start
         fallback_end = None

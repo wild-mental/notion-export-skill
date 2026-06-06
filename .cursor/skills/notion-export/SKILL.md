@@ -179,7 +179,9 @@ The main export script:
 5. Downloads the zip with `token_v2 + file_token`, `X-Notion-Space-Id`, and `Referer`.
 6. Saves and safely unzips under `notion-exports/`.
 
-During unzip, zip member paths are repeatedly URL-decoded and Unicode NFC normalized. Path components that exceed `NOTION_EXPORT_MAX_FILENAME_BYTES` (default 240 bytes), or relative paths that exceed `NOTION_EXPORT_MAX_RELATIVE_PATH_BYTES` (default 700 bytes), are shortened by UTF-8 byte length and get a stable hash suffix. Local links inside extracted Markdown files are rewritten to the actual extracted paths. The original zip is preserved unchanged.
+During unzip, zip member paths are repeatedly URL-decoded and Unicode NFC normalized. Path components that exceed `NOTION_EXPORT_MAX_FILENAME_BYTES` (default 240 bytes), or relative paths that exceed `NOTION_EXPORT_MAX_RELATIVE_PATH_BYTES` (default 700 bytes), are shortened by UTF-8 byte length and get a stable hash suffix. The original zip is preserved unchanged.
+
+Local links inside extracted Markdown files are rewritten to the actual extracted paths as angle-bracket local targets such as `[title](<decoded path/file.md>)`, instead of percent-encoded URL-style targets. This keeps links compatible with Cursor Markdown Preview and other resolvers that do not URL-decode local Markdown link targets.
 
 Expected success output:
 

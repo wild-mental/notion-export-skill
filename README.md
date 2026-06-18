@@ -3,6 +3,8 @@
 # notion-export
 > Skill for Cursor, Claude Code, Codex agents
 
+**Language / 언어:** [한국어](README.md) · [English](README.en.md)
+
 Notion 페이지를 이미지, 파일, 첨부까지 빠짐없이 백업하기 위한 멀티 벤더 Skill입니다. 공개 API나 `getSignedFileUrls` 대신 `token_v2` + `file_token` 기반의 Notion Export zip 경로를 우선 사용하고, Cursor, Claude Code, Codex가 같은 스크립트 정본을 공유합니다.
 
 ---

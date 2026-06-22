@@ -188,12 +188,27 @@ def wait_for_export_url(
     )
 
 
+def is_notion_host(url: str) -> bool:
+    # Notion issues export zips and protected assets from notion.so AND notion.com
+    # hosts (e.g. file.notion.com, app.notion.com). A bare "notion.so/" substring
+    # check misses file.notion.com, so the file_token cookie / space-id header are
+    # not attached and the download 403s. S3 pre-signed URLs (amazonaws.com) are
+    # intentionally NOT matched (they need no Notion auth headers).
+    host = (urllib.parse.urlsplit(url).hostname or "").lower()
+    return (
+        host == "notion.so"
+        or host.endswith(".notion.so")
+        or host == "notion.com"
+        or host.endswith(".notion.com")
+    )
+
+
 def download_url(url: str, dest: Path, token_v2: str, file_token: str, space_id: str) -> None:
     headers = {
         "User-Agent": "Mozilla/5.0",
         "Referer": "https://www.notion.so/",
     }
-    if "notion.so/" in url:
+    if is_notion_host(url):
         headers["Cookie"] = f"token_v2={token_v2};file_token={file_token}"
         headers["X-Notion-Space-Id"] = space_id
     req = urllib.request.Request(url, headers=headers)

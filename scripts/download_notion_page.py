@@ -391,6 +391,20 @@ def requote_url(value: str) -> str:
     return urllib.parse.urlunsplit((parts.scheme, parts.netloc, path, parts.query, parts.fragment))
 
 
+def is_notion_host(url: str) -> bool:
+    # Notion-session auth (Bearer / token_v2 cookie) must attach for Notion-hosted
+    # assets on notion.so AND notion.com (e.g. file.notion.com), but NOT for S3
+    # pre-signed URLs (amazonaws.com), which need no headers. A bare "notion.so/"
+    # substring check misses file.notion.com and 403s / returns HTML.
+    host = (urllib.parse.urlsplit(url).hostname or "").lower()
+    return (
+        host == "notion.so"
+        or host.endswith(".notion.so")
+        or host == "notion.com"
+        or host.endswith(".notion.com")
+    )
+
+
 def download_file(
     url: str,
     path: Path,
@@ -398,7 +412,7 @@ def download_file(
     session_token: Optional[str] = None,
 ) -> None:
     headers = {"User-Agent": "notion-local-backup/1.0"}
-    if "notion.so/" in url:
+    if is_notion_host(url):
         if api_token:
             headers["Authorization"] = f"Bearer {api_token}"
         if session_token:
@@ -410,7 +424,7 @@ def download_file(
     with urllib.request.urlopen(req, timeout=120) as response:
         content_type = response.headers.get("content-type", "")
         body = response.read()
-    if "notion.so/" in url and content_type.startswith("text/html"):
+    if is_notion_host(url) and content_type.startswith("text/html"):
         raise RuntimeError("Notion returned HTML instead of a file")
     path.write_bytes(body)
 

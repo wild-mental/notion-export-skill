@@ -80,13 +80,17 @@ def normalize_cookie_value(value: str, name: str) -> str:
 
 
 def notion_headers(token_v2: str, file_token: str, space_id: str) -> Dict[str, str]:
-    return {
+    headers = {
         "Cookie": f"token_v2={token_v2};file_token={file_token}",
         "Content-Type": "application/json",
         "Accept": "application/json",
         "User-Agent": "Mozilla/5.0",
-        "X-Notion-Space-Id": space_id,
     }
+    # The space-id header is what we are trying to discover in fetch_space_id_via_record_values(),
+    # so send it only when known. An empty header value is worse than no header.
+    if space_id:
+        headers["X-Notion-Space-Id"] = space_id
+    return headers
 
 
 def post_json(endpoint: str, payload: dict, token_v2: str, file_token: str, space_id: str) -> dict:
@@ -102,6 +106,31 @@ def post_json(endpoint: str, payload: dict, token_v2: str, file_token: str, spac
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", "replace")[:1000]
         raise RuntimeError(f"{API_ORIGIN}/api/v3/{endpoint} failed: HTTP {exc.code}: {body}") from exc
+
+
+def fetch_space_id_via_record_values(page_id: str, token_v2: str, file_token: str) -> Optional[str]:
+    """Read the page's own space_id from the API.
+
+    infer_space_id() only scans .notion-cache/*.md, so a workspace that never ran the
+    legacy Markdown path has nothing to scan and inference fails even though the API
+    reports space_id fine. This is the same value check_token_v2_block_access.py prints
+    as origins[].getRecordValues.space_id.
+    """
+    payload = {"requests": [{"table": "block", "id": hyphenated_uuid(page_id), "version": -1}]}
+    try:
+        body = post_json("getRecordValues", payload, token_v2, file_token, "")
+    except (RuntimeError, urllib.error.URLError, ValueError):
+        return None
+
+    for result in body.get("results") or []:
+        if not isinstance(result, dict):
+            continue
+        value = result.get("value")
+        if isinstance(value, dict):
+            space_id = value.get("space_id")
+            if space_id:
+                return str(space_id)
+    return None
 
 
 def find_first_export_url(value) -> Optional[str]:
@@ -632,7 +661,15 @@ def main() -> int:
 
     space_id = infer_space_id(d)
     if not space_id:
-        raise SystemExit("Could not infer spaceId. Set NOTION_SPACE_ID and retry.")
+        space_id = fetch_space_id_via_record_values(page_id, token_v2, file_token)
+        if space_id:
+            print(f"spaceId resolved via getRecordValues: {space_id}", file=sys.stderr)
+    if not space_id:
+        raise SystemExit(
+            "Could not infer spaceId. Run "
+            'python3 scripts/check_token_v2_block_access.py "<Notion URL or page_id>" '
+            "and set NOTION_SPACE_ID to origins[].getRecordValues.space_id, then retry."
+        )
 
     print(f"enqueue Notion export: page={page_id} space={space_id} type={args.type}", file=sys.stderr)
     task_id = enqueue_export(page_id, space_id, token_v2, file_token, args.type)

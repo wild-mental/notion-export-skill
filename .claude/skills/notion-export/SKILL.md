@@ -225,7 +225,20 @@ If stored cookies are stale, refresh them:
 
 ### Zip download `HTTP 403` with HTML
 
-The export task completed, but the download context was invalid. Re-check `file_token` from the same profile/account as `token_v2`. The downloader must send:
+Check the **download URL host first**. This is usually not an expired cookie.
+
+1. Notion serves export zips from `file.notion.com` / `file.notion.so`. If the request to
+   those hosts goes out **without a `Cookie` header**, that is a host-matching bug in the
+   downloader, not a credential problem. `export_notion_zip_token_v2.py` matches by parsed
+   hostname (`is_notion_host()`); a substring test like `"notion.so/" in url` silently
+   misses `file.notion.com` and 403s every download.
+2. If `check_token_v2_access.sh` reports `role=editor` and only the zip 403s, refreshing
+   cookies is almost always wasted effort. Confirm the `Cookie` header is actually being
+   sent before suspecting expiry.
+3. Only after the host check, verify `file_token` comes from the same profile/account as
+   `token_v2`.
+
+The downloader must send these to Notion-owned hosts:
 
 ```text
 Cookie: token_v2=...;file_token=...
@@ -233,17 +246,30 @@ X-Notion-Space-Id: <space-id>
 Referer: https://www.notion.so/
 ```
 
+S3 pre-signed URLs (`*.amazonaws.com`) must **not** get these headers — cookies break
+signature validation. Never widen the host match to cover them.
+
 ### `file_token` missing
 
 Refresh the target Notion page, then re-check cookies on both `www.notion.so` and `app.notion.com`.
 
 ### `Could not infer spaceId`
 
-Set `NOTION_SPACE_ID` explicitly and retry:
+`infer_space_id()` scans `.notion-cache/*.md`, so a workspace that never ran the legacy
+Markdown path has nothing to scan. The script then falls back to `getRecordValues`, which
+returns the page's own `space_id` and prints `spaceId resolved via getRecordValues: ...`.
+
+If both paths fail, read the value directly and pass it in:
 
 ```bash
+python3 scripts/check_token_v2_block_access.py "<Notion URL or page_id>"
+# read origins[].getRecordValues.space_id from the report
+
 NOTION_SPACE_ID=<space-id> ./scripts/export_with_token_v2.sh "<Notion URL or page_id>"
 ```
+
+A populated `origins[].getRecordValues.space_id` alongside a failed inference means only
+the local cache scan came up empty — the value is valid, just not discoverable from files.
 
 ## Legacy Markdown Path
 

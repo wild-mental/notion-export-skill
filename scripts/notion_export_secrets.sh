@@ -128,6 +128,9 @@ notion_export_normalize_cookie_value() {
   local value="$1"
   local name="$2"
   local part
+  # bash 3.2 (macOS default) errors on "${parts[@]}" for an empty array under `set -u`,
+  # so declare and initialize it explicitly before any expansion.
+  local -a parts=()
 
   value="${value#Cookie:}"
   value="${value#cookie:}"
@@ -135,7 +138,9 @@ notion_export_normalize_cookie_value() {
   value="${value%"${value##*[![:space:]]}"}"
 
   IFS=';' read -r -a parts <<< "$value"
-  for part in "${parts[@]}"; do
+  # ${arr[@]+"${arr[@]}"} expands to nothing when empty and to individually quoted
+  # elements otherwise — safe on both bash 3.2 and 5.x.
+  for part in ${parts[@]+"${parts[@]}"}; do
     part="${part#"${part%%[![:space:]]*}"}"
     part="${part%"${part##*[![:space:]]}"}"
     if [[ "$part" == "$name="* ]]; then
@@ -153,8 +158,15 @@ notion_export_normalize_cookie_value() {
 
 notion_export_prompt_secret() {
   local prompt="$1"
-  local value
-  IFS= read -r -s -p "$prompt" value
+  local value=""
+  # Read from the controlling terminal so the prompt still works when stdin is a pipe,
+  # /dev/null, or an agent runner. `|| true` keeps EOF (read returns 1) from killing
+  # the caller under `set -e`; empty values are validated by the caller.
+  if [[ -r /dev/tty ]]; then
+    IFS= read -r -s -p "$prompt" value < /dev/tty || true
+  else
+    IFS= read -r -s -p "$prompt" value || true
+  fi
   printf "\n" >&2
   printf "%s" "$value"
 }
@@ -259,8 +271,14 @@ notion_export_save_file_credentials() {
     echo "Fallback storage is a local file with chmod 600:" >&2
     echo "  $NOTION_EXPORT_COOKIE_FILE" >&2
     echo "This is not encrypted at rest." >&2
-    local answer
-    IFS= read -r -p "Store cookies in this local file? [y/N]: " answer
+    local answer=""
+    # Same EOF guard as notion_export_prompt_secret: an unanswered prompt must fall
+    # through to the default (N), not abort the script under `set -e`.
+    if [[ -r /dev/tty ]]; then
+      IFS= read -r -p "Store cookies in this local file? [y/N]: " answer < /dev/tty || true
+    else
+      IFS= read -r -p "Store cookies in this local file? [y/N]: " answer || true
+    fi
     if [[ ! "$answer" =~ ^[Yy]$ ]]; then
       return 1
     fi

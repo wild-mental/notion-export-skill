@@ -193,9 +193,12 @@ When you need to change the Notion origin:
 NOTION_API_ORIGIN=https://app.notion.com ./scripts/export_with_token_v2.sh "<Notion URL or page_id>"
 ```
 
-When spaceId cannot be inferred automatically:
+When spaceId cannot be inferred automatically (a failed local cache scan automatically falls back to `getRecordValues`; set it by hand only when both fail):
 
 ```bash
+python3 scripts/check_token_v2_block_access.py "<Notion URL or page_id>"
+# use origins[].getRecordValues.space_id from the report
+
 NOTION_SPACE_ID=<space-id> ./scripts/export_with_token_v2.sh "<Notion URL or page_id>"
 ```
 
@@ -265,7 +268,9 @@ Example of access failure:
 
 Failures usually mean the cookies were copied from the wrong browser profile/account, or that the account does not have permission for the page.
 
-If the zip download fails with `HTTP 403` or an HTML response, re-check `file_token` from the same profile. The download needs all of `token_v2`, `file_token`, `X-Notion-Space-Id`, and `Referer`.
+If the zip download fails with `HTTP 403` or an HTML response, **check the download URL's host before suspecting cookie expiry**. Notion serves export zips from `file.notion.com` / `file.notion.so`, and a request to those hosts that carries no `Cookie` header is a host-matching bug in the downloader, not a credential problem. If the access diagnostic reports `role=editor` and only the zip 403s, refreshing cookies is almost always wasted effort.
+
+If it still fails after the host check, re-check `file_token` from the same profile as `token_v2`. The download needs all of `token_v2`, `file_token`, `X-Notion-Space-Id`, and `Referer`. S3 pre-signed URLs (`*.amazonaws.com`) must **not** receive these headers — cookies break signature validation.
 
 ---
 

@@ -193,9 +193,12 @@ Notion origin을 바꿔야 할 때:
 NOTION_API_ORIGIN=https://app.notion.com ./scripts/export_with_token_v2.sh "<Notion URL or page_id>"
 ```
 
-spaceId를 자동 추론하지 못할 때:
+spaceId를 자동 추론하지 못할 때 (로컬 캐시 스캔이 실패하면 `getRecordValues` 폴백이 자동으로 시도됩니다. 둘 다 실패했을 때만 직접 지정하세요):
 
 ```bash
+python3 scripts/check_token_v2_block_access.py "<Notion URL or page_id>"
+# 리포트의 origins[].getRecordValues.space_id 값을 사용
+
 NOTION_SPACE_ID=<space-id> ./scripts/export_with_token_v2.sh "<Notion URL or page_id>"
 ```
 
@@ -265,7 +268,9 @@ https://www.notion.so 또는 https://app.notion.com
 
 실패하면 대개 쿠키가 잘못된 브라우저 프로필/계정에서 복사되었거나, 해당 계정에 페이지 권한이 없는 상태입니다.
 
-`HTTP 403` 또는 HTML 응답으로 zip 다운로드가 실패하면 `file_token`을 같은 프로필에서 다시 확인하세요. 다운로드에는 `token_v2`, `file_token`, `X-Notion-Space-Id`, `Referer`가 모두 필요합니다.
+`HTTP 403` 또는 HTML 응답으로 zip 다운로드가 실패하면 **쿠키 만료를 의심하기 전에 다운로드 URL의 호스트부터 확인**하세요. Notion은 export zip을 `file.notion.com` / `file.notion.so`에서 배포하는데, 이 호스트로 나가는 요청에 `Cookie` 헤더가 붙지 않았다면 그건 자격 증명 문제가 아니라 다운로더의 호스트 판정 버그입니다. 접근 진단이 `role=editor`로 통과하는데 zip만 403이면 쿠키 재발급은 대개 헛수고입니다.
+
+호스트 확인 후에도 실패하면 `file_token`을 `token_v2`와 같은 프로필에서 다시 확인하세요. 다운로드에는 `token_v2`, `file_token`, `X-Notion-Space-Id`, `Referer`가 모두 필요합니다. 단, S3 presigned URL(`*.amazonaws.com`)에는 이 헤더들을 붙이면 안 됩니다 — 쿠키가 서명 검증을 깨뜨립니다.
 
 ---
 
